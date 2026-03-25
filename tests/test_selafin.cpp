@@ -6,6 +6,7 @@
 #include "gtest/gtest.h"
 #include <string>
 #include <vector>
+#include <algorithm>
 
 //mdal
 #include "mdal.h"
@@ -268,6 +269,43 @@ TEST( MeshSLFTest, SaveMeshFrame )
     test_file( "/slf/example_res_fr.slf" ),
     tmp_file( "/emptymesh.slf" ),
     "SELAFIN" );
+}
+
+TEST( MeshSLFTest, IPOBOComputation )
+{
+  // Save a mesh and verify that the written IPOBO array is correct:
+  //   - boundary nodes must have consecutive values starting at 1
+  //   - interior nodes must be 0
+  //   - at least some boundary nodes must exist
+  std::string savedFile = tmp_file( "/ipobo_test.slf" );
+
+  MDAL_MeshH mesh = MDAL_LoadMesh( test_file( "/slf/example.slf" ).c_str() );
+  ASSERT_NE( mesh, nullptr );
+  ASSERT_EQ( MDAL_Status::None, MDAL_LastStatus() );
+
+  MDAL_SaveMesh( mesh, savedFile.c_str(), "SELAFIN" );
+  ASSERT_EQ( MDAL_Status::None, MDAL_LastStatus() );
+  MDAL_CloseMesh( mesh );
+
+  // Read IPOBO directly from the saved binary file
+  std::vector<int> ipobo = MDAL::SelafinFile::readIPOBO( savedFile );
+  ASSERT_FALSE( ipobo.empty() );
+
+  // Count boundary nodes and check that values are consecutive from 1
+  int maxBoundary = *std::max_element( ipobo.begin(), ipobo.end() );
+  EXPECT_GT( maxBoundary, 0 ) << "No boundary nodes found in IPOBO";
+
+  // Check that boundary indices form a contiguous sequence [1 .. maxBoundary]
+  std::vector<int> sorted;
+  for ( int v : ipobo )
+    if ( v > 0 ) sorted.push_back( v );
+  std::sort( sorted.begin(), sorted.end() );
+  for ( int i = 0; i < static_cast<int>( sorted.size() ); ++i )
+    EXPECT_EQ( i + 1, sorted[i] ) << "IPOBO boundary indices are not consecutive";
+
+  // Boundary nodes should be a small fraction of total nodes
+  EXPECT_LT( static_cast<int>( sorted.size() ), static_cast<int>( ipobo.size() ) )
+    << "All nodes appear to be boundary nodes";
 }
 
 static MDAL_DatasetGroupH addNewScalarDatasetGroup( MDAL_MeshH mesh, MDAL_DriverH driver, std::string file )

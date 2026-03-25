@@ -55,6 +55,9 @@ namespace MDAL
       //! Add the dataset group to the file (persist), replace dataset in the new group by Selafindataset with lazy loading
       bool addDatasetGroup( DatasetGroup *datasetGroup );
 
+      //! Returns the IPOBO array from the file (0 for interior nodes, >0 for boundary nodes)
+      static std::vector<int> readIPOBO( const std::string &fileName );
+
     private:
 
       //! Initializes and open the file file with the \a fileName
