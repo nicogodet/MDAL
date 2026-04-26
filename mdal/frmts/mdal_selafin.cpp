@@ -1030,7 +1030,7 @@ static std::vector<int> computeIPOBO(
     {
       int v1 = connectivity[f * verticesPerFace + v];
       int v2 = connectivity[f * verticesPerFace + ( v + 1 ) % verticesPerFace];
-      edgeCounts[{std::min( v1, v2 ), std::max( v1, v2 )}]++;
+      edgeCounts[ {std::min( v1, v2 ), std::max( v1, v2 )} ]++;
     }
   }
 
