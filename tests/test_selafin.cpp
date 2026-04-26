@@ -279,63 +279,80 @@ TEST( MeshSLFTest, SaveMeshFrame )
 
 TEST( MeshSLFTest, IPOBOComputation )
 {
-  // Save a mesh and verify that the written IPOBO array is correct:
-  //   - boundary nodes must have consecutive values starting at 1
-  //   - interior nodes must be 0
-  //   - vertices at the bbox extremes must be marked as boundary nodes
-  std::string savedFile = tmp_file( "/ipobo_test.slf" );
-
-  MDAL_MeshH mesh = MDAL_LoadMesh( test_file( "/slf/example.slf" ).c_str() );
+  // Build a 3x3 triangulated grid in memory and save it as SELAFIN.
+  // The mesh is a MemoryMesh, so save() takes the compute path and
+  // exercises computeIPOBO. Expected: 8 perimeter vertices numbered
+  // consecutively 1..8, centre vertex 4 marked as interior (0).
+  //
+  //   6 -- 7 -- 8
+  //   |  / |  / |
+  //   3 -- 4 -- 5
+  //   |  / |  / |
+  //   0 -- 1 -- 2
+  MDAL_DriverH driver = MDAL_driverFromName( "2DM" );
+  ASSERT_NE( driver, nullptr );
+  MDAL_MeshH mesh = MDAL_CreateMesh( driver );
   ASSERT_NE( mesh, nullptr );
-  ASSERT_EQ( MDAL_Status::None, MDAL_LastStatus() );
 
-  // Locate vertices at bbox extremes — they are necessarily on the external boundary.
-  const int vCount = MDAL_M_vertexCount( mesh );
-  ASSERT_GT( vCount, 0 );
-  int idxMinX = 0, idxMaxX = 0, idxMinY = 0, idxMaxY = 0;
-  double minX = getVertexXCoordinatesAt( mesh, 0 );
-  double maxX = minX;
-  double minY = getVertexYCoordinatesAt( mesh, 0 );
-  double maxY = minY;
-  for ( int i = 1; i < vCount; ++i )
+  std::vector<double> coords
   {
-    double xi = getVertexXCoordinatesAt( mesh, i );
-    double yi = getVertexYCoordinatesAt( mesh, i );
-    if ( xi < minX ) { minX = xi; idxMinX = i; }
-    if ( xi > maxX ) { maxX = xi; idxMaxX = i; }
-    if ( yi < minY ) { minY = yi; idxMinY = i; }
-    if ( yi > maxY ) { maxY = yi; idxMaxY = i; }
-  }
+    0, 0, 0,   1, 0, 0,   2, 0, 0,
+    0, 1, 0,   1, 1, 0,   2, 1, 0,
+    0, 2, 0,   1, 2, 0,   2, 2, 0,
+  };
+  MDAL_M_addVertices( mesh, 9, coords.data() );
 
+  std::vector<int> faceSizes( 8, 3 );
+  std::vector<int> faceIndices
+  {
+    0, 1, 4,   0, 4, 3,
+    1, 2, 5,   1, 5, 4,
+    3, 4, 7,   3, 7, 6,
+    4, 5, 8,   4, 8, 7,
+  };
+  MDAL_M_addFaces( mesh, 8, faceSizes.data(), faceIndices.data() );
+
+  std::string savedFile = tmp_file( "/ipobo_grid.slf" );
   MDAL_SaveMesh( mesh, savedFile.c_str(), "SELAFIN" );
   ASSERT_EQ( MDAL_Status::None, MDAL_LastStatus() );
   MDAL_CloseMesh( mesh );
 
-  // Read IPOBO directly from the saved binary file
   std::vector<int> ipobo = MDAL::SelafinFile::readIPOBO( savedFile );
-  ASSERT_FALSE( ipobo.empty() );
+  ASSERT_EQ( ipobo.size(), 9u );
 
-  // Count boundary nodes and check that values are consecutive from 1
-  int maxBoundary = *std::max_element( ipobo.begin(), ipobo.end() );
-  EXPECT_GT( maxBoundary, 0 ) << "No boundary nodes found in IPOBO";
+  EXPECT_EQ( ipobo[4], 0 ) << "Centre vertex should be interior";
 
-  // Check that boundary indices form a contiguous sequence [1 .. maxBoundary]
-  std::vector<int> sorted;
+  std::vector<int> boundaryVals;
   for ( int v : ipobo )
-    if ( v > 0 ) sorted.push_back( v );
-  std::sort( sorted.begin(), sorted.end() );
-  for ( int i = 0; i < static_cast<int>( sorted.size() ); ++i )
-    EXPECT_EQ( i + 1, sorted[i] ) << "IPOBO boundary indices are not consecutive";
+    if ( v > 0 ) boundaryVals.push_back( v );
+  EXPECT_EQ( boundaryVals.size(), 8u ) << "8 perimeter vertices should be boundary";
 
-  // Boundary nodes should be a small fraction of total nodes
-  EXPECT_LT( static_cast<int>( sorted.size() ), static_cast<int>( ipobo.size() ) )
-      << "All nodes appear to be boundary nodes";
+  std::sort( boundaryVals.begin(), boundaryVals.end() );
+  for ( size_t i = 0; i < boundaryVals.size(); ++i )
+    EXPECT_EQ( boundaryVals[i], static_cast<int>( i + 1 ) )
+        << "IPOBO boundary indices are not consecutive";
+}
 
-  // Geometric validation: bbox-extreme vertices must be on the boundary
-  EXPECT_GT( ipobo[idxMinX], 0 ) << "Vertex at min X is not marked boundary";
-  EXPECT_GT( ipobo[idxMaxX], 0 ) << "Vertex at max X is not marked boundary";
-  EXPECT_GT( ipobo[idxMinY], 0 ) << "Vertex at min Y is not marked boundary";
-  EXPECT_GT( ipobo[idxMaxY], 0 ) << "Vertex at max Y is not marked boundary";
+TEST( MeshSLFTest, IPOBORoundTrip )
+{
+  // Round-tripping a MeshSelafin reuses the cached IPOBO from disk
+  // (no recompute). The saved file must therefore have exactly the
+  // same IPOBO array as the source — including any non-consecutive
+  // numbering produced by other tools.
+  std::string sourceFile = test_file( "/slf/example.slf" );
+  std::string savedFile = tmp_file( "/ipobo_roundtrip.slf" );
+
+  std::vector<int> sourceIpobo = MDAL::SelafinFile::readIPOBO( sourceFile );
+  ASSERT_FALSE( sourceIpobo.empty() );
+
+  MDAL_MeshH mesh = MDAL_LoadMesh( sourceFile.c_str() );
+  ASSERT_NE( mesh, nullptr );
+  MDAL_SaveMesh( mesh, savedFile.c_str(), "SELAFIN" );
+  ASSERT_EQ( MDAL_Status::None, MDAL_LastStatus() );
+  MDAL_CloseMesh( mesh );
+
+  std::vector<int> savedIpobo = MDAL::SelafinFile::readIPOBO( savedFile );
+  EXPECT_EQ( sourceIpobo, savedIpobo ) << "Round-trip did not preserve IPOBO";
 }
 
 static MDAL_DatasetGroupH addNewScalarDatasetGroup( MDAL_MeshH mesh, MDAL_DriverH driver, std::string file )
