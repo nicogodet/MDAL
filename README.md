@@ -12,7 +12,7 @@
 # MDAL
 Mesh Data Abstraction Library
 
-MDAL is [OSGeo Community Project](https://www.osgeo.org/foundation-news/osgeo-community-program-welcomes-the-mesh-data-abstraction-library-mdal-project/)
+MDAL is an [OSGeo Community Project](https://www.osgeo.org/foundation-news/osgeo-community-program-welcomes-the-mesh-data-abstraction-library-mdal-project/)
 
 ![MDAL](docs/images/LogoHorizontal_01_color_400x123.png)
 ![OSGeo](docs/images/OSGeo_community-370x142.png)
@@ -49,7 +49,9 @@ You can use MDAL to load the following file formats:
 - [PLY](https://en.wikipedia.org/wiki/PLY_(file_format)): Stanford Polygon Format also useful for mesh created from point clouds by [PDAL](https://pdal.io)
 - [DFSU*](https://www.dhigroup.com):DHI Flexible File Format (External Driver)
 - [DFS2*](https://www.dhigroup.com):DHI Grid Series File (External Driver)
- 
+- [H2i*](https://github.com/d2hydro/H2i_code_factory/blob/main/docs/data_format.md): Outputs of the H2i modelling package
+- [MIKE 21](https://www.xmswiki.com/wiki/SMS:MIKE_21_*.mesh): Mesh Text/plain file with *.mesh extension
+
 \* Data lazy loaded
 
 \*\* Formats can be preprocessed using QGIS [Crayfish](https://plugins.qgis.org/plugins/crayfish/) Mesh processing algorithm to one of supported formats
@@ -67,13 +69,15 @@ You can use MDAL to load the following file formats:
 | XDMF   |  N/A | N/A | NO | READ-ONLY | NO | YES |
 | DAT   |  N/A | N/A | READ-ONLY | READ-WRITE | N/A | NO | 
 | 3Di   |  READ-ONLY | NO |  READ-ONLY | READ-ONLY | NO | NO | 
-| UGRID   |  READ-WRITE | NO | READ-ONLY | READ-ONLY | NO | NO | 
+| UGRID   |  READ-WRITE | NO | READ-ONLY | READ-WRITE | NO | NO |
 | FLO-2D   |  READ-ONLY  | NO | READ-ONLY | READ-WRITE | NO | NO  | 
-| Selafin   |  READ-ONLY | NO | NO | READ-ONLY | NO | NO | 
+| Selafin   |  READ-WRITE | NO | NO | READ-WRITE | NO | NO | 
 | SWW   |  READ-ONLY | NO | NO | READ-ONLY | NO | NO | 
 | PLY   | READ-WRITE | N/A | READ-WRITE | READ-WRITE | READ-WRITE | N/A |
 | DFSU  | READ-ONLY | N/A | NO | READ-ONLY | READ-ONLY | YES | 
 | DFS2  | READ-ONLY | N/A | NO | READ-ONLY | N/A | YES |
+| H2i | READ-ONLY | NO | NO | READ-ONLY | N/A | YES |
+| Mike21   |  READ-WRITE | N/A | N/A | N/A | N/A | N/A |
 
 # Standalone Installation
 
@@ -114,6 +118,17 @@ QGIS contains internal copy of MDAL library in following versions:
 | 3.20.0  | 0.8.1   | |
 | 3.22.0  | 0.9.x   | DFS2, DFSU 3D, PLY write |
 | 3.24.0  | 1.0.x   | TBD |
+| 3.24.1  | 0.9.90  | H2i format |
+| 3.28.0  | 1.0.0   | write dataset capability for UGRID format |
+| 3.28.2  | 1.0.1   | |
+| 3.28.4  | 1.0.2   | |
+| 3.30.0  | 1.0.2   | |
+| 3.36.0  | 1.1.0   | Mike21 format support read/write |
+| 3.38.0  | 1.2.0   | Groundwater / surface water meshes for 3Di format |
+| 3.42.0  | 1.3.1   | Fix 2dm format coordinates saving, allow precision up to 16 digits |
+|         |         | XMDF loading Dataset Group fix, support for Mesh in XMDF files (as 2DMeshModule) |
+|         |         | Support Dataset Group Removal From Mesh |
+| 3.44.4  | 1.3.2   | Various bug fixes and optimizations |
 
 versions `X.Y.9Z` are development versions or alpha/beta releases (e.g. `0.4.90`, `0.4.91`, ...)
 

@@ -28,7 +28,10 @@ namespace MDAL
       DriverUgrid *create() override;
       void save( const std::string &fileName, const std::string &meshName, Mesh *mesh ) override;
 
+      std::string writeDatasetOnFileSuffix() const override;
       std::string saveMeshOnFileSuffix() const override;
+
+      bool persist( DatasetGroup *group ) override;
 
     private:
       std::string buildUri( const std::string &meshFile ) override;
@@ -59,20 +62,22 @@ namespace MDAL
       std::vector<std::string> findMeshesNames() const;
       std::vector<std::string> mAllMeshNames; // all mesh names in file
       std::string mMeshName; // processed mesh name
-      int mMeshDimension;
+      int mMeshDimension = 0;
       std::string nodeZVariableName() const;
 
-      void populate1DMeshDimensions( MDAL::CFDimensions &dims );
-      void populate2DMeshDimensions( MDAL::CFDimensions &dims, int &ncid );
+      void populate1DMeshDimensions( MDAL::CFDimensions &dims ) const;
+      void populate2DMeshDimensions( MDAL::CFDimensions &dims, int &ncid ) const;
 
       void ignore1DMeshVariables( const std::string &mesh, std::set<std::string> &ignoreVariables );
       void ignore2DMeshVariables( const std::string &mesh, std::set<std::string> &ignoreVariables );
 
       void writeDimensions( MDAL::Mesh *mesh );
-      void writeVariables( MDAL::Mesh *mesh );
+      void writeVariables( MDAL::Mesh *mesh, const std::string &meshName );
       void writeGlobals();
       int faceVerticesMaximumCount() const override
       { return std::numeric_limits<int>::max(); }
+
+      bool writeDatasetGroup( MDAL::DatasetGroup *group, const std::string &fileName, const std::string &meshName );
   };
 
 } // namespace MDAL

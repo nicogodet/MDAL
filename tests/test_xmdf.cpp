@@ -299,6 +299,27 @@ TEST( MeshXmdfTest, withReferenceTime )
   MDAL_CloseMesh( m );
 }
 
+TEST( MeshXmdfTest, unlockWhenClose )
+{
+  std::string tmpXmdf = tmp_file( "/temp.xmdf" );
+  copy( test_file( "/xmdf/withReferenceTime/PTM_005_QGIS_Axis.xmdf" ), tmpXmdf );
+
+  ASSERT_TRUE( fileExists( tmpXmdf ) );
+
+  std::string path = test_file( "/xmdf/withReferenceTime/hydraul_006.2dm" );
+  EXPECT_EQ( MDAL_MeshNames( path.c_str() ), "2DM:\"" + path + "\"" );
+  MDAL_MeshH m = MDAL_LoadMesh( path.c_str() );
+  ASSERT_NE( m, nullptr );
+  MDAL_M_LoadDatasets( m, tmpXmdf.c_str() );
+  ASSERT_EQ( 12, MDAL_M_datasetGroupCount( m ) );
+
+  MDAL_CloseMesh( m );
+
+  deleteFile( tmpXmdf );
+
+  ASSERT_FALSE( fileExists( tmpXmdf ) );
+}
+
 TEST( MeshXmdfTest, HydroAs2D )
 {
   std::string path = test_file( "/xmdf/hydro-as-2d/hydro_as-2d.2dm" );
@@ -452,6 +473,177 @@ TEST( MeshXmdfTest, HydroAs2D )
   MDAL_CloseMesh( m );
 }
 
+TEST( MeshXmdfTest, withFinalgroup )
+{
+  std::string path = test_file( "/xmdf/withFinal/final_mindt_example.2dm" );
+  EXPECT_EQ( MDAL_MeshNames( path.c_str() ), "2DM:\"" + path + "\"" );
+  MDAL_MeshH m = MDAL_LoadMesh( path.c_str() );
+  ASSERT_NE( m, nullptr );
+  path = test_file( "/xmdf/withFinal/final_mindt_example.xmdf" );
+  MDAL_M_LoadDatasets( m, path.c_str() );
+  MDAL_Status s = MDAL_LastStatus();
+  EXPECT_EQ( MDAL_Status::None, s );
+
+  EXPECT_EQ( MDAL_M_datasetGroupCount( m ), 3 );
+
+  MDAL_DatasetGroupH g = MDAL_M_datasetGroup( m, 1 );
+
+  const char *name = MDAL_G_name( g );
+  EXPECT_EQ( std::string( "Minimum dt/Final" ), std::string( name ) );
+  EXPECT_EQ( MDAL_G_datasetCount( g ), 1 );
+
+  g = MDAL_M_datasetGroup( m, 2 );
+
+  name = MDAL_G_name( g );
+  EXPECT_EQ( std::string( "Minimum dt" ), std::string( name ) );
+  EXPECT_EQ( MDAL_G_datasetCount( g ), 3 );
+
+  MDAL_CloseMesh( m );
+}
+
+TEST( MeshXmdfTest, MeshLoading )
+{
+  std::string pathMesh = test_file( "/xmdf/withMesh/mesh.h5" );
+  MDAL_MeshH m = MDAL_LoadMesh( pathMesh.c_str() );
+  ASSERT_NE( m, nullptr );
+
+  ASSERT_EQ( 5, MDAL_M_vertexCount( m ) );
+  ASSERT_EQ( 2, MDAL_M_faceCount( m ) );
+
+  double minX, maxX, minY, maxY;
+  MDAL_M_extent( m, &minX, &maxX, &minY, &maxY );
+
+  EXPECT_DOUBLE_EQ( 1000, minX );
+  EXPECT_DOUBLE_EQ( 3000, maxX );
+  EXPECT_DOUBLE_EQ( 2000, minY );
+  EXPECT_DOUBLE_EQ( 3000, maxY );
+
+  EXPECT_EQ( 1, MDAL_M_datasetGroupCount( m ) );
+
+  MDAL_DatasetGroupH g = MDAL_M_datasetGroup( m, 0 );
+  ASSERT_NE( g, nullptr );
+
+  EXPECT_TRUE( MDAL_G_hasScalarData( g ) );
+
+  int meta_count = MDAL_G_metadataCount( g );
+  ASSERT_EQ( 1, meta_count );
+
+  const char *name = MDAL_G_name( g );
+  EXPECT_EQ( std::string( "Z-Values" ), std::string( name ) );
+
+  EXPECT_EQ( MDAL_M_datasetGroupCount( m ), 1 );
+
+  MDAL_DatasetH ds = MDAL_G_dataset( g, 0 );
+
+  EXPECT_TRUE( MDAL_D_isValid( ds ) );
+
+  double min, max;
+  MDAL_D_minimumMaximum( ds, &min, &max );
+
+  EXPECT_DOUBLE_EQ( 10, min );
+  EXPECT_DOUBLE_EQ( 50, max );
+}
+
+TEST( MeshXmdfTest, DataInSubfolder )
+{
+  std::string pathMesh = test_file( "/xmdf/withMesh/mesh.h5" );
+  MDAL_MeshH m = MDAL_LoadMesh( pathMesh.c_str() );
+  ASSERT_NE( m, nullptr );
+  ASSERT_EQ( 1, MDAL_M_datasetGroupCount( m ) );
+
+  std::string path = test_file( "/xmdf/withMesh/data.h5" );
+  EXPECT_TRUE( std::string( MDAL_MeshNames( path.c_str() ) ).empty() );
+  MDAL_M_LoadDatasets( m, path.c_str() );
+  MDAL_Status s = MDAL_LastStatus();
+  EXPECT_EQ( MDAL_Status::None, s );
+
+  ASSERT_EQ( 3, MDAL_M_datasetGroupCount( m ) );
+
+  MDAL_DatasetGroupH g = MDAL_M_datasetGroup( m, 1 );
+  ASSERT_NE( g, nullptr );
+  ASSERT_EQ( std::string( "/Datasets/data" ), std::string( MDAL_G_name( g ) ) );
+
+  MDAL_DatasetH ds = MDAL_G_dataset( g, 0 );
+  ASSERT_NE( ds, nullptr );
+  ASSERT_TRUE( MDAL_D_isValid( ds ) );
+  EXPECT_EQ( 5, MDAL_D_valueCount( ds ) );
+
+  double min, max;
+  MDAL_D_minimumMaximum( ds, &min, &max );
+  EXPECT_DOUBLE_EQ( 1, min );
+  EXPECT_DOUBLE_EQ( 3, max );
+
+  g = MDAL_M_datasetGroup( m, 2 );
+  ASSERT_NE( g, nullptr );
+  ASSERT_EQ( std::string( "subgroup" ), std::string( MDAL_G_name( g ) ) );
+
+  ds = MDAL_G_dataset( g, 0 );
+  ASSERT_NE( ds, nullptr );
+  ASSERT_TRUE( MDAL_D_isValid( ds ) );
+  EXPECT_EQ( 5, MDAL_D_valueCount( ds ) );
+
+  MDAL_D_minimumMaximum( ds, &min, &max );
+  EXPECT_DOUBLE_EQ( 100, min );
+  EXPECT_DOUBLE_EQ( 500, max );
+}
+
+TEST( MeshXmdfTest, MultipleMeshes )
+{
+  // dataset without mesh
+  std::string path = test_file( "/xmdf/withMesh/data.h5" );
+  EXPECT_EQ( std::string( MDAL_MeshNames( path.c_str() ) ), std::string( "" ) );
+  MDAL_MeshH m = MDAL_LoadMesh( path.c_str() );
+  ASSERT_EQ( m, nullptr );
+
+  // test that all 4 meshes are found
+  path = test_file( "/xmdf/withMesh/multiple_meshes.h5" );
+  EXPECT_EQ( MDAL_MeshNames( path.c_str() ),
+             "XMDF:\"" + path + "\":/2DMeshModule/triangle_and_quad;;" +
+             "XMDF:\"" + path + "\":/AnotherGroup/2DMeshModule/triangle_and_quad;;" +
+             "XMDF:\"" + path + "\":/OtherModuleWithMesh/t_q;;" +
+             "XMDF:\"" + path + "\":/YetAnotherGroup/ModuleWithMesh/t_q" );
+
+  // default mesh can be loaded
+  m = MDAL_LoadMesh( path.c_str() );
+  ASSERT_NE( m, nullptr );
+
+  // load specific mesh and test extent to validate correct mesh was loaded
+  std::string uri = "\"" + path + "\":/2DMeshModule/triangle_and_quad";
+  m = MDAL_LoadMesh( uri.c_str() );
+  ASSERT_NE( m, nullptr );
+
+  double minX, maxX, minY, maxY;
+  MDAL_M_extent( m, &minX, &maxX, &minY, &maxY );
+
+  EXPECT_DOUBLE_EQ( 1000, minX );
+  EXPECT_DOUBLE_EQ( 3000, maxX );
+  EXPECT_DOUBLE_EQ( 2000, minY );
+  EXPECT_DOUBLE_EQ( 3000, maxY );
+
+  // load another mesh
+  uri = "\"" + path + "\":/AnotherGroup/2DMeshModule/triangle_and_quad";
+  m = MDAL_LoadMesh( uri.c_str() );
+  ASSERT_NE( m, nullptr );
+
+  MDAL_M_extent( m, &minX, &maxX, &minY, &maxY );
+
+  EXPECT_DOUBLE_EQ( 10, minX );
+  EXPECT_DOUBLE_EQ( 30, maxX );
+  EXPECT_DOUBLE_EQ( 20, minY );
+  EXPECT_DOUBLE_EQ( 30, maxY );
+
+  // load another mesh
+  uri = "\"" + path + "\":/YetAnotherGroup/ModuleWithMesh/t_q";
+  m = MDAL_LoadMesh( uri.c_str() );
+  ASSERT_NE( m, nullptr );
+
+  MDAL_M_extent( m, &minX, &maxX, &minY, &maxY );
+
+  EXPECT_DOUBLE_EQ( 1, minX );
+  EXPECT_DOUBLE_EQ( 3, maxX );
+  EXPECT_DOUBLE_EQ( 2, minY );
+  EXPECT_DOUBLE_EQ( 3, maxY );
+}
 
 int main( int argc, char **argv )
 {

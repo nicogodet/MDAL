@@ -17,6 +17,7 @@ SET(MDAL_SOURCES
   frmts/mdal_binary_dat.cpp
   frmts/mdal_selafin.cpp
   frmts/mdal_esri_tin.cpp
+  frmts/mdal_mike21.cpp
 )
 
 SET(MDAL_HEADERS
@@ -35,6 +36,7 @@ SET(MDAL_HEADERS
   frmts/mdal_binary_dat.hpp
   frmts/mdal_selafin.hpp
   frmts/mdal_esri_tin.hpp
+  frmts/mdal_mike21.hpp
 )
 
 IF(BUILD_PLY)
@@ -69,10 +71,12 @@ IF(GDAL_FOUND)
   SET(MDAL_SOURCES ${MDAL_SOURCES}
     frmts/mdal_gdal.cpp
     frmts/mdal_gdal_grib.cpp
+    frmts/mdal_h2i.cpp
   )
   SET(MDAL_HEADERS ${MDAL_HEADERS}
     frmts/mdal_gdal.hpp
     frmts/mdal_gdal_grib.hpp
+    frmts/mdal_h2i.hpp
   )
 ENDIF(GDAL_FOUND)
 
@@ -196,8 +200,8 @@ FOREACH(LIB_NAME ${MDAL_LIBS})
   ENDIF(XML_FOUND)
 
   IF(SQLITE3_FOUND)
-    TARGET_INCLUDE_DIRECTORIES(${LIB_NAME} PRIVATE ${SQLITE3_INCLUDE_DIR})
-    TARGET_LINK_LIBRARIES(${LIB_NAME} PUBLIC ${SQLITE3_LIBRARIES} )
+    TARGET_INCLUDE_DIRECTORIES(${LIB_NAME} PRIVATE ${SQLite3_INCLUDE_DIRS})
+    TARGET_LINK_LIBRARIES(${LIB_NAME} PUBLIC ${SQLite3_LIBRARIES} )
   ENDIF(SQLITE3_FOUND)
 ENDFOREACH(LIB_NAME ${MDAL_LIBS})
 

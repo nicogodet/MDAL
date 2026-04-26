@@ -66,6 +66,7 @@ class HdfFile
       Create
     };
     typedef HdfH<H5I_FILE> Handle;
+    typedef std::shared_ptr<Handle> SharedHandle;
 
     HdfFile( const std::string &path, HdfFile::Mode mode );
     ~HdfFile();
@@ -75,15 +76,29 @@ class HdfFile
     inline std::vector<std::string> groups() const;
 
     inline HdfGroup group( const std::string &path ) const;
+
+    //!  Creates a group with an absolute path
+    inline HdfGroup createGroup( const std::string &path ) const;
+
+    /**
+     *  Creates a group with the id of location and a path that can be relative from the location
+     *  (see https://docs.hdfgroup.org/hdf5/v1_12/group___h5_g.html#ga86d93295965f750ef25dea2505a711d9)
+     */
+    inline HdfGroup createGroup( hid_t locationId, const std::string &path ) const;
+
     inline HdfDataset dataset( const std::string &path ) const;
+    inline HdfDataset dataset( const std::string &path, HdfDataType dtype, size_t nItems = 1 ) const;
+    inline HdfDataset dataset( const std::string &path, HdfDataType dtype, HdfDataspace dataspace ) const;
     inline HdfAttribute attribute( const std::string &attr_name ) const;
     inline bool pathExists( const std::string &path ) const;
     std::string filePath() const;
 
   protected:
-    std::shared_ptr<Handle> d;
+    SharedHandle d;
     std::string mPath;
 };
+
+typedef std::shared_ptr<HdfFile> HdfFileShared;
 
 class HdfDataType
 {
@@ -92,6 +107,29 @@ class HdfDataType
     HdfDataType();
     HdfDataType( hid_t type, bool isNativeType = true );
     ~HdfDataType();
+
+    HdfDataType( const HdfDataType &other ) = default;
+    HdfDataType &operator=( const HdfDataType &other ) = default;
+
+    // Move constructor
+    HdfDataType( HdfDataType &&other ) noexcept
+      : d( std::move( other.d ) )
+      , mNativeId( other.mNativeId )
+    {
+      other.mNativeId = -1;
+    }
+
+    // Move assignment operator
+    HdfDataType &operator=( HdfDataType &&other ) noexcept
+    {
+      if ( this != &other )
+      {
+        d = std::move( other.d );
+        mNativeId = other.mNativeId;
+        other.mNativeId = -1;
+      }
+      return *this;
+    }
 
     // Creates new string type with size, use HDF_MAX_NAME for maximum length
     static HdfDataType createString( int size = HDF_MAX_NAME );
@@ -108,10 +146,6 @@ class HdfGroup
 {
   public:
     typedef HdfH<H5I_GROUP> Handle;
-
-    static HdfGroup create( hid_t file, const std::string &path );
-    HdfGroup( hid_t file, const std::string &path );
-    HdfGroup( std::shared_ptr<Handle> handle );
 
     bool isValid() const;
     hid_t id() const;
@@ -132,8 +166,17 @@ class HdfGroup
   protected:
     std::vector<std::string> objects( H5G_obj_t type ) const;
 
+  private:
+    HdfGroup( HdfFile::SharedHandle file, const std::string &path );
+    HdfGroup( std::shared_ptr<Handle> handle, HdfFile::SharedHandle file );
+
+  private:
+    HdfFile::SharedHandle mFile; //must be declared before "std::shared_ptr<Handle> d" to be sure it will be the last destroyed
+
   protected:
     std::shared_ptr<Handle> d;
+
+    friend class HdfFile;
 };
 
 class HdfAttribute
@@ -175,6 +218,26 @@ class HdfDataspace
     //! dataspace of the dataset
     HdfDataspace( hid_t dataset = -1 );
     ~HdfDataspace( );
+
+    HdfDataspace( const HdfDataspace & ) = default;
+    HdfDataspace &operator=( const HdfDataspace & ) = default;
+
+    // Move constructor
+    HdfDataspace( HdfDataspace &&other ) noexcept
+      : d( std::move( other.d ) )
+    {
+    }
+
+    // Move assignment operator
+    HdfDataspace &operator=( HdfDataspace &&other ) noexcept
+    {
+      if ( this != &other )
+      {
+        d = std::move( other.d );
+      }
+      return *this;
+    }
+
     //! select from 1D array
     void selectHyperslab( hsize_t start, hsize_t count );
     //! select from N-D array
@@ -195,14 +258,30 @@ class HdfDataset
 
     //! creates invalid dataset
     HdfDataset() = default;
-
-    //! Creates new, simple 1 dimensional dataset
-    HdfDataset( hid_t file, const std::string &path, HdfDataType dtype, size_t nItems = 1 );
-    //! Creates new dataset with custom dimensions
-    HdfDataset( hid_t file, const std::string &path, HdfDataType dtype, HdfDataspace dataspace );
-    //! Opens dataset for reading
-    HdfDataset( hid_t file, const std::string &path );
     ~HdfDataset();
+    HdfDataset( const HdfDataset & ) = default;
+    HdfDataset &operator=( const HdfDataset & ) = default;
+
+    // Move constructor
+    HdfDataset( HdfDataset &&other ) noexcept
+      : mFile( std::move( other.mFile ) )
+      , d( std::move( other.d ) )
+      , mType( std::move( other.mType ) )
+    {
+    }
+
+    // Move assignment operator
+    HdfDataset &operator=( HdfDataset &&other ) noexcept
+    {
+      if ( this != &other )
+      {
+        mFile = std::move( other.mFile );
+        d = std::move( other.d );
+        mType = std::move( other.mType );
+      }
+      return *this;
+    }
+
     bool isValid() const;
     hid_t id() const;
 
@@ -225,10 +304,10 @@ class HdfDataset
     //! for each dimension specified by offset and count
     //! size of offsets and counts must be same as rank (number of dims) of dataset
     //! the results array is 1D
-    std::vector<uchar> readArrayUint8( const std::vector<hsize_t> offsets, const std::vector<hsize_t> counts ) const;
-    std::vector<float> readArray( const std::vector<hsize_t> offsets, const std::vector<hsize_t> counts ) const;
-    std::vector<double> readArrayDouble( const std::vector<hsize_t> offsets, const std::vector<hsize_t> counts ) const;
-    std::vector<int> readArrayInt( const std::vector<hsize_t> offsets, const std::vector<hsize_t> counts ) const;
+    std::vector<uchar> readArrayUint8( const std::vector<hsize_t> &offsets, const std::vector<hsize_t> &counts ) const;
+    std::vector<float> readArray( const std::vector<hsize_t> &offsets, const std::vector<hsize_t> &counts ) const;
+    std::vector<double> readArrayDouble( const std::vector<hsize_t> &offsets, const std::vector<hsize_t> &counts ) const;
+    std::vector<int> readArrayInt( const std::vector<hsize_t> &offsets, const std::vector<hsize_t> &counts ) const;
 
     inline bool hasAttribute( const std::string &attr_name ) const;
     inline HdfAttribute attribute( const std::string &attr_name ) const;
@@ -247,8 +326,8 @@ class HdfDataset
     }
 
     template <typename T> std::vector<T> readArray( hid_t mem_type_id,
-        const std::vector<hsize_t> offsets,
-        const std::vector<hsize_t> counts ) const
+        const std::vector<hsize_t> &offsets,
+        const std::vector<hsize_t> &counts ) const
     {
       HdfDataspace dataspace( d->id );
       dataspace.selectHyperslab( offsets, counts );
@@ -287,20 +366,48 @@ class HdfDataset
     //! Writes array of double data
     void write( std::vector<double> &value );
 
+  private:
+    //! Creates new, simple 1 dimensional dataset
+    HdfDataset( HdfFile::SharedHandle file, const std::string &path, HdfDataType dtype, size_t nItems = 1 );
+    //! Creates new dataset with custom dimensions
+    HdfDataset( HdfFile::SharedHandle file, const std::string &path, HdfDataType dtype, HdfDataspace dataspace );
+    //! Opens dataset for reading
+    HdfDataset( HdfFile::SharedHandle file, const std::string &path );
+
+  private:
+    HdfFile::SharedHandle mFile; //must be declared before "std::shared_ptr<Handle> d" to be sure it will be the last destroyed
+
   protected:
     std::shared_ptr<Handle> d;
     HdfDataType mType; // when in write mode
+
+    friend class HdfFile;
+    friend class HdfGroup;
 };
 
 inline std::vector<std::string> HdfFile::groups() const { return group( "/" ).groups(); }
 
-inline HdfGroup HdfFile::group( const std::string &path ) const { return HdfGroup( d->id, path ); }
+inline HdfGroup HdfFile::group( const std::string &path ) const { return HdfGroup( d, path ); }
 
-inline HdfDataset HdfFile::dataset( const std::string &path ) const { return HdfDataset( d->id, path ); }
+inline HdfGroup HdfFile::createGroup( const std::string &path ) const
+{
+  return HdfGroup( std::make_shared< HdfGroup::Handle >( H5Gcreate2( d->id, path.c_str(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT ) ), d );
+}
 
-inline HdfGroup HdfGroup::group( const std::string &groupName ) const { return HdfGroup( file_id(), childPath( groupName ) ); }
+inline HdfGroup HdfFile::createGroup( hid_t locationId, const std::string &path ) const
+{
+  return HdfGroup( std::make_shared< HdfGroup::Handle >( H5Gcreate2( locationId, path.c_str(), H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT ) ), d );
+}
 
-inline HdfDataset HdfGroup::dataset( const std::string &dsName ) const { return HdfDataset( file_id(), childPath( dsName ) ); }
+inline HdfDataset HdfFile::dataset( const std::string &path ) const { return HdfDataset( d, path ); }
+
+inline HdfDataset HdfFile::dataset( const std::string &path, HdfDataType dtype, size_t nItems ) const { return HdfDataset( d, path, dtype, nItems ); }
+
+inline HdfDataset HdfFile::dataset( const std::string &path, HdfDataType dtype, HdfDataspace dataspace ) const {return HdfDataset( d, path, dtype, dataspace );}
+
+inline HdfGroup HdfGroup::group( const std::string &groupName ) const { return HdfGroup( mFile, childPath( groupName ) ); }
+
+inline HdfDataset HdfGroup::dataset( const std::string &dsName ) const { return HdfDataset( mFile, childPath( dsName ) ); }
 
 inline bool HdfDataset::hasAttribute( const std::string &attr_name ) const
 {

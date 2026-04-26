@@ -1,6 +1,6 @@
 /*
  MDAL - Mesh Data Abstraction Library (MIT License)
- Copyright (C) 2020 Runette Software Ltd.
+ Copyright (C) 2020 - 23 Runette Software Ltd.
 */
 
 #include <stddef.h>
@@ -24,7 +24,6 @@
 #include "mdal_data_model.hpp"
 #include "mdal_memory_data_model.hpp"
 #include "libplyxx.h"
-#include "mdal_driver_manager.hpp"
 
 #define DRIVER_NAME "PLY"
 
@@ -49,11 +48,10 @@ MDAL::DriverPly *MDAL::DriverPly::create()
 
 MDAL::DriverPly::~DriverPly() = default;
 
-size_t getIndex( std::vector<std::pair<std::string, bool>> v, std::string in )
+size_t getIndex( std::vector<std::pair<std::string, bool >> v, std::string in )
 {
-  auto is_equal = [ in ]( std::pair<std::string, bool> s ) { return  s.first == in; };
-
-  auto it = std::find_if( v.begin(), v.end(), is_equal );
+  auto it = std::find_if( v.begin(), v.end(),
+  [ &in ]( std::pair<std::string, bool> s ) { return  s.first == in; } );
   return ( size_t )std::distance( v.begin(), it );
 }
 
@@ -82,10 +80,6 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverPly::load( const std::string &meshFile, 
   Edges edges( 0 );
   size_t maxSizeFace = 0;
 
-  size_t vertexCount = 0;
-  size_t faceCount = 0;
-  size_t edgeCount = 0;
-
   //data structures that will contain all of the datasets, categorised by vertex, face and edge datasets
   std::vector<std::vector<double>> vertexDatasets; // contains the data
   std::vector<std::pair<std::string, bool>> vProp2Ds; // contains the dataset name and a flag for scalar / vector
@@ -99,20 +93,9 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverPly::load( const std::string &meshFile, 
   if ( MDAL::Log::getLastStatus() != MDAL_Status::None ) { return nullptr; }
   const libply::ElementsDefinition &definitions = file.definitions();
   const libply::Metadata &metadata = file.metadata();
+  const std::string &format = file.format();
   for ( const libply::Element &element : definitions )
   {
-    if ( element.name == "vertex" )
-    {
-      vertexCount = element.size;
-    }
-    else if ( element.name == "face" )
-    {
-      faceCount = element.size;
-    }
-    else if ( element.name == "edge" )
-    {
-      edgeCount = element.size;
-    }
     for ( const libply::Property &property : element.properties )
     {
       if ( element.name == "vertex" &&
@@ -148,8 +131,6 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverPly::load( const std::string &meshFile, 
     }
   }
 
-
-
   for ( const libply::Element &el : definitions )
   {
     if ( el.name == "vertex" )
@@ -174,16 +155,22 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverPly::load( const std::string &meshFile, 
           }
           else
           {
-            int dsIdx = getIndex( vProp2Ds, p.name );
+            int dsIdx = MDAL::toInt( getIndex( vProp2Ds, p.name ) );
             if ( vProp2Ds[ dsIdx ].second )
             {
               const std::string name = vProp2Ds[ dsIdx ].first;
               auto &vals = listProps.at( name );
-              libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[i] );
-              vals.second.push_back( lp->size() );
-              for ( size_t j = 0; j < lp->size(); j++ )
+              if ( libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[i] ) )
               {
-                vals.first.push_back( lp->value( j ) );
+                vals.second.push_back( MDAL::toInt( lp->size() ) );
+                for ( size_t j = 0; j < lp->size(); j++ )
+                {
+                  vals.first.push_back( lp->value( j ) );
+                }
+              }
+              else
+              {
+                MDAL::Log::error( MDAL_Status::Err_InvalidData, "PLY: the element is not a List Property" );
               }
             }
             else
@@ -213,27 +200,39 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverPly::load( const std::string &meshFile, 
             }
             else
             {
-              libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[i] );
-              if ( maxSizeFace < lp->size() ) maxSizeFace = lp->size();
-              face.resize( lp->size() );
-              for ( size_t j = 0; j < lp->size(); j++ )
+              if ( libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[i] ) )
               {
-                face[j] = int( lp->value( j ) );
+                if ( maxSizeFace < lp->size() ) maxSizeFace = lp->size();
+                face.resize( lp->size() );
+                for ( size_t j = 0; j < lp->size(); j++ )
+                {
+                  face[j] = int( lp->value( j ) );
+                }
+              }
+              else
+              {
+                MDAL::Log::error( MDAL_Status::Err_InvalidData, "PLY: the element is not a List Property" );
               }
             }
           }
           else
           {
-            int dsIdx = getIndex( fProp2Ds, p.name );
+            int dsIdx =  MDAL::toInt( getIndex( fProp2Ds, p.name ) );
             if ( fProp2Ds[ dsIdx ].second )
             {
               const std::string name = fProp2Ds[ dsIdx ].first;
               auto &vals = listProps.at( name );
-              libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[i] );
-              vals.second.push_back( lp->size() );
-              for ( size_t j = 0; j < lp->size(); j++ )
+              if ( libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[i] ) )
               {
-                vals.first.push_back( lp->value( j ) );
+                vals.second.push_back( MDAL::toInt( lp->size() ) );
+                for ( size_t j = 0; j < lp->size(); j++ )
+                {
+                  vals.first.push_back( lp->value( j ) );
+                }
+              }
+              else
+              {
+                MDAL::Log::error( MDAL_Status::Err_InvalidData, "PLY: the element is not a List Property" );
               }
             }
             else
@@ -243,7 +242,7 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverPly::load( const std::string &meshFile, 
             }
           }
         }
-        faces.push_back( face );
+        faces.emplace_back( std::move( face ) );
       };
       file.setElementReadCallback( "face", faceCallback );
     }
@@ -252,29 +251,39 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverPly::load( const std::string &meshFile, 
       libply::ElementReadCallback edgeCallback = [&edges, &el, &eProp2Ds, &edgeDatasets, &listProps]( libply::ElementBuffer & e )
       {
         Edge edge;
+        bool foundStartVertex = false;
+        bool foundEndVertex = false;
         for ( size_t i = 0; i < el.properties.size(); i++ )
         {
           libply::Property p = el.properties[i];
           if ( p.name == "vertex1" )
           {
             edge.startVertex = int( e[i] );
+            foundStartVertex = true;
           }
           else if ( p.name == "vertex2" )
           {
             edge.endVertex = int( e[i] );
+            foundEndVertex = true;
           }
           else
           {
-            int dsIdx = getIndex( eProp2Ds, p.name );
+            int dsIdx = MDAL::toInt( getIndex( eProp2Ds, p.name ) );
             if ( eProp2Ds[ dsIdx ].second )
             {
               const std::string name = eProp2Ds[ dsIdx ].first;
               auto &vals = listProps.at( name );
-              libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[i] );
-              vals.second.push_back( lp->size() );
-              for ( size_t j = 0; j < lp->size(); j++ )
+              if ( libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[i] ) )
               {
-                vals.first.push_back( lp->value( j ) );
+                vals.second.push_back( MDAL::toInt( lp->size() ) );
+                for ( size_t j = 0; j < lp->size(); j++ )
+                {
+                  vals.first.push_back( lp->value( j ) );
+                }
+              }
+              else
+              {
+                MDAL::Log::error( MDAL_Status::Err_InvalidData, "PLY: the element is not a List Property" );
               }
             }
             else
@@ -284,7 +293,10 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverPly::load( const std::string &meshFile, 
             }
           }
         }
-        edges.push_back( edge );
+        if ( foundStartVertex && foundEndVertex )
+        {
+          edges.push_back( edge );
+        }
       };
       file.setElementReadCallback( "edge", edgeCallback );
     }
@@ -292,14 +304,6 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverPly::load( const std::string &meshFile, 
 
   file.read();
   if ( MDAL::Log::getLastStatus() != MDAL_Status::None ) { return nullptr; }
-  if ( vertices.size() != vertexCount ||
-       faces.size() != faceCount ||
-       edges.size() != edgeCount
-     )
-  {
-    MDAL_SetStatus( MDAL_LogLevel::Error, MDAL_Status::Err_InvalidData, "Incomplete Mesh" );
-    return nullptr;
-  }
 
   std::unique_ptr< MemoryMesh > mesh(
     new MemoryMesh(
@@ -311,10 +315,20 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverPly::load( const std::string &meshFile, 
   mesh->setFaces( std::move( faces ) );
   mesh->setVertices( std::move( vertices ) );
   mesh->setEdges( std::move( edges ) );
-  if ( metadata.find( "crs" ) != metadata.end() )
+
+  for ( auto &it : metadata )
   {
-    mesh->setSourceCrs( metadata.at( "crs" ) );
+    if ( it.first == "crs" )
+    {
+      mesh->setSourceCrs( it.second );
+    }
+    else
+    {
+      mesh->setMetadata( it.first, it.second );
+    }
   }
+
+  mesh->setMetadata( "format", format );
 
 
   // Add Bed Elevation
@@ -367,7 +381,7 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverPly::load( const std::string &meshFile, 
       }
       else
       {
-        auto levels = listProps.at( name + "__vols" );
+        const auto &levels = listProps.at( name + "__vols" );
         std::shared_ptr<DatasetGroup> group = addDatasetGroup( mesh.get(), name, DataOnVolumes, true );
         addDataset3D( group.get(), vals.first, vals.second, levels.first, levels.second );
         listProps.erase( name + "__vols" );
@@ -554,21 +568,21 @@ void MDAL::DriverPly::save( const std::string &fileName, const std::string &mesh
   {
     if ( group->dataLocation() == MDAL_DataLocation::DataOnVertices )
     {
-      if ( group->name() != "Bed Elevation" ) vgroups.push_back( group );
+      if ( group->name() != "Bed Elevation" ) vgroups.emplace_back( std::move( group ) );
     }
     else if ( group->dataLocation() == MDAL_DataLocation::DataOnFaces )
     {
-      fgroups.push_back( group );
+      fgroups.emplace_back( std::move( group ) );
     }
     else if ( group->dataLocation() == MDAL_DataLocation::DataOnEdges )
     {
-      egroups.push_back( group );
+      egroups.emplace_back( std::move( group ) );
     }
     else if ( group->dataLocation() == MDAL_DataLocation::DataOnVolumes )
     {
       if ( group->isScalar() )
       {
-        volGroups.push_back( group );
+        volGroups.emplace_back( std::move( group ) );
       }
       else
       {
@@ -577,15 +591,44 @@ void MDAL::DriverPly::save( const std::string &fileName, const std::string &mesh
     }
   }
 
+  libply::Metadata meta;
 
-  libply::FileOut file( fileName, libply::File::Format::ASCII );
+  meta.emplace( "crs", mesh->crs() );
+  const MDAL::Metadata &metadata = mesh->metadata;
+  libply::File::Format format = libply::File::Format::BINARY_LITTLE_ENDIAN;
+
+  const std::unordered_map<std::string, libply::File::Format> format_map =
+  {
+    { "ascii", libply::File::Format::ASCII },
+    { "binary_big_endian", libply::File::Format::BINARY_BIG_ENDIAN },
+    { "binary_little_endian", libply::File::Format::BINARY_LITTLE_ENDIAN }
+  };
+
+  for ( auto it = metadata.cbegin(); it != metadata.cend(); ++it )
+  {
+    const std::pair< std::string, std::string > &item = *it;
+    if ( item.first == "format" )
+    {
+      if ( format_map.find( item.second ) != format_map.end() )
+      {
+        format = format_map.at( item.second );
+      }
+    }
+    else
+    {
+      meta.emplace( item.first, item.second );
+    }
+  }
+
+  libply::FileOut file( fileName, format );
+  file.metadata = std::move( meta );
   if ( MDAL::Log::getLastStatus() != MDAL_Status::None ) return;
 
   libply::ElementsDefinition definitions;
   std::vector<libply::Property> vproperties;
-  vproperties.emplace_back( "X", libply::Type::COORDINATE, false );
-  vproperties.emplace_back( "Y", libply::Type::COORDINATE, false );
-  vproperties.emplace_back( "Z", libply::Type::COORDINATE, false );
+  vproperties.emplace_back( "x", libply::Type::COORDINATE, false );
+  vproperties.emplace_back( "y", libply::Type::COORDINATE, false );
+  vproperties.emplace_back( "z", libply::Type::COORDINATE, false );
   for ( std::shared_ptr<DatasetGroup> group : vgroups )
   {
     vproperties.emplace_back( group->name(), libply::Type::FLOAT64, ! group->isScalar() );
@@ -644,10 +687,16 @@ void MDAL::DriverPly::save( const std::string &fileName, const std::string &mesh
       {
         double val[2];
         vgroups[i]->datasets[0]->vectorData( index, 1, &val[0] );
-        libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[i + 3] );
-        lp->define( libply::Type::FLOAT64, 2 );
-        lp->value( 0 ) = val[0];
-        lp->value( 1 ) = val[1];
+        if ( libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[i + 3] ) )
+        {
+          lp->define( libply::Type::FLOAT64, 2 );
+          lp->value( 0 ) = val[0];
+          lp->value( 1 ) = val[1];
+        }
+        else
+        {
+          MDAL::Log::error( MDAL_Status::Err_InvalidData, "PLY: the element is not a List Property" );
+        }
       };
     }
   };
@@ -662,12 +711,18 @@ void MDAL::DriverPly::save( const std::string &fileName, const std::string &mesh
     int idx = 0;
     int faceOffsets[1];
     faces->next( 1, faceOffsets, vertexIndices.size(), vertexIndices.data() );
-    libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[idx] );
-    lp->define( libply::Type::UINT32, faceOffsets[0] );
-    for ( int j = 0; j < faceOffsets[0]; ++j )
+    if ( libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[idx] ) )
     {
-      lp->value( j ) = vertexIndices[j];
-    };
+      lp->define( libply::Type::UINT32, faceOffsets[0] );
+      for ( int j = 0; j < faceOffsets[0]; ++j )
+      {
+        lp->value( j ) = vertexIndices[j];
+      };
+    }
+    else
+    {
+      MDAL::Log::error( MDAL_Status::Err_InvalidData, "PLY: the element is not a List Property" );
+    }
     idx++;
     for ( size_t i = 0; i < fgroups.size(); i++ )
     {
@@ -681,10 +736,16 @@ void MDAL::DriverPly::save( const std::string &fileName, const std::string &mesh
       {
         double val[2];
         fgroups[i]->datasets[0]->vectorData( index, 1, &val[0] );
-        libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[idx] );
-        lp->define( libply::Type::FLOAT64, 2 );
-        lp->value( 0 ) = val[0];
-        lp->value( 1 ) = val[1];
+        if ( libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[idx] ) )
+        {
+          lp->define( libply::Type::FLOAT64, 2 );
+          lp->value( 0 ) = val[0];
+          lp->value( 1 ) = val[1];
+        }
+        else
+        {
+          MDAL::Log::error( MDAL_Status::Err_InvalidData, "PLY: the element is not a List Property" );
+        }
       };
       idx++;
     }
@@ -699,22 +760,33 @@ void MDAL::DriverPly::save( const std::string &fileName, const std::string &mesh
       const int vindex = f2v[0];
       std::vector<double> val( count, 0 );
       ds->scalarVolumesData( vindex, count, val.data() );
-      libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[idx] );
-      lp->define( libply::Type::FLOAT64, count );
-
-      for ( int j = 0; j < count; ++j )
+      if ( libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[idx] ) )
       {
-        lp->value( j ) = val[j];
-      };
+        lp->define( libply::Type::FLOAT64, count );
+        for ( int j = 0; j < count; ++j )
+        {
+          lp->value( j ) = val[j];
+        };
+      }
+      else
+      {
+        MDAL::Log::error( MDAL_Status::Err_InvalidData, "PLY: the element is not a List Property" );
+      }
       idx++;
       std::vector<double> ex( count + 1, 0 );
       ds->verticalLevelData( vindex + index, count + 1, ex.data() );
-      libply::ListProperty *lp1 = dynamic_cast<libply::ListProperty *>( &e[idx] );
-      lp1->define( libply::Type::FLOAT64, count + 1 );
-      for ( int j = 0; j < count + 1; ++j )
+      if ( libply::ListProperty *lp1 = dynamic_cast<libply::ListProperty *>( &e[idx] ) )
       {
-        lp1->value( j ) = ex[j];
-      };
+        lp1->define( libply::Type::FLOAT64, count + 1 );
+        for ( int j = 0; j < count + 1; ++j )
+        {
+          lp1->value( j ) = ex[j];
+        };
+      }
+      else
+      {
+        MDAL::Log::error( MDAL_Status::Err_InvalidData, "PLY: the element is not a List Property" );
+      }
       idx++;
     }
   };
@@ -742,10 +814,16 @@ void MDAL::DriverPly::save( const std::string &fileName, const std::string &mesh
       {
         double val[2];
         egroups[i]->datasets[0]->vectorData( index, 1, &val[0] );
-        libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[i + 2] );
-        lp->define( libply::Type::FLOAT64, 2 );
-        lp->value( 0 ) = val[0];
-        lp->value( 1 ) = val[1];
+        if ( libply::ListProperty *lp = dynamic_cast<libply::ListProperty *>( &e[i + 2] ) )
+        {
+          lp->define( libply::Type::FLOAT64, 2 );
+          lp->value( 0 ) = val[0];
+          lp->value( 1 ) = val[1];
+        }
+        else
+        {
+          MDAL::Log::error( MDAL_Status::Err_InvalidData, "PLY: the element is not a List Property" );
+        }
       };
     }
   };

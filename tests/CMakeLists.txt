@@ -73,6 +73,8 @@ SET(TESTS
     test_binary_dat.cpp
     test_selafin.cpp
     test_esri_tin.cpp
+    test_h2i.cpp
+    test_mike21.cpp
 )
 
 IF(BUILD_PLY)
@@ -126,7 +128,7 @@ IF(BUILD_EXTERNAL_DRIVERS)
     test_dynamic_driver.cpp
   )
 
-  IF(EXTERNAL_DRIVER_DHI_DFS)
+  IF(EXTERNAL_DRIVER_DHI_DFSU)
     SET(TESTS ${TESTS}
         test_dhi_driver.cpp
     )

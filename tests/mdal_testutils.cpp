@@ -14,6 +14,12 @@
 #include <fstream>
 #include <stdio.h>
 
+#ifdef _MSC_VER
+#include <locale>
+#include <codecvt>
+#include <stringapiset.h>
+#endif
+
 const char *data_path()
 {
   return TESTDATA;
@@ -25,14 +31,14 @@ const char *drivers_path()
 }
 
 
-std::string test_file( std::string basename )
+std::string test_file( const std::string &basename )
 {
   std::string path( data_path() );
   path += basename;
   return path;
 }
 
-std::string tmp_file( std::string basename )
+std::string tmp_file( const std::string &basename )
 {
   std::string path( data_path() + std::string( "/tmp" ) );
   path += basename;
@@ -49,15 +55,34 @@ void copy( const std::string &src, const std::string &dest )
   dstS << srcS.rdbuf();
 }
 
-void deleteFile( const std::string &path )
+bool deleteFile( const std::string &path )
 {
   if ( fileExists( path ) )
-    remove( path.c_str() );
+  {
+#ifdef _MSC_VER
+    std::wstring_convert< std::codecvt_utf8_utf16< wchar_t > > converter;
+    std::wstring wStr = converter.from_bytes( path );
+    return DeleteFileW( wStr.c_str() );
+#else
+    return remove( path.c_str() ) == 0;
+#endif
+  }
+  return true;
 }
 
 bool fileExists( const std::string &filename )
 {
+#ifdef _MSC_VER
+  std::ifstream in;
+  std::wstring_convert< std::codecvt_utf8_utf16< wchar_t > > converter;
+  std::wstring wStr = converter.from_bytes( filename );
+  in.open( wStr, std::ifstream::in | std::ifstream::binary );
+  if ( !in.is_open() )
+    return false;
+#else
   std::ifstream in( filename );
+#endif
+
   return in.good();
 }
 
@@ -227,7 +252,33 @@ void compareMeshFrames( MDAL_MeshH meshA, MDAL_MeshH meshB )
 
   std::vector<int> verticesA = faceVertexIndices( meshA, orignal_f_count );
   std::vector<int> verticesB = faceVertexIndices( meshB, saved_f_count );
+
   EXPECT_TRUE( compareVectors( verticesA, verticesB ) );
+}
+
+void compareMeshMetadata( MDAL_MeshH meshA, MDAL_MeshH meshB )
+{
+  // Metadata count
+  const int orignal_m_count = MDAL_M_metadataCount( meshA );
+  const int saved_m_count = MDAL_M_metadataCount( meshB );
+  EXPECT_EQ( orignal_m_count, saved_m_count );
+
+  // Metadata values
+  for ( int i = 0; i < orignal_m_count; ++i )
+  {
+    const std::string keyA( MDAL_M_metadataKey( meshA, i ) );
+    const std::string valA( MDAL_M_metadataValue( meshA, i ) );
+    for ( int j = 0; j < saved_m_count; ++j )
+    {
+      const std::string keyB( MDAL_M_metadataKey( meshB, j ) );
+      const std::string valB( MDAL_M_metadataValue( meshB, j ) );
+
+      if ( keyA == keyB && valA == valB )
+        break;
+      else if ( j == saved_m_count - 1 )
+        FAIL() << "Mesh metadata do not match: " << keyA << ": " << valA;
+    }
+  }
 }
 
 std::vector<double> getCoordinates( MDAL_MeshH mesh, int verticesCount )
@@ -278,7 +329,7 @@ double getVertexZCoordinatesAt( MDAL_MeshH mesh, int index )
 std::vector<int> faceVertexIndices( MDAL_MeshH mesh, int faceCount )
 {
   MDAL_MeshFaceIteratorH iterator = MDAL_M_faceIterator( mesh );
-  int faceOffsetsBufferLen = faceCount + 1;
+  int faceOffsetsBufferLen = faceCount;
   int vertexIndicesBufferLen = faceOffsetsBufferLen * MDAL_M_faceVerticesMaximumCount( mesh );
   std::vector<int> faceOffsetsBuffer( static_cast<size_t>( faceOffsetsBufferLen ) );
   std::vector<int> vertexIndicesBuffer( static_cast<size_t>( vertexIndicesBufferLen ) );
@@ -374,7 +425,7 @@ bool compareReferenceTime( MDAL_DatasetGroupH group, const char *referenceTime )
   return std::strcmp( MDAL_G_referenceTime( group ), referenceTime ) == 0;
 }
 
-void saveAndCompareMesh( const std::string &filename, const std::string &savedFile, const std::string &driver, const std::string &meshName )
+void saveAndCompareMesh( const std::string &filename, const std::string &savedFile, const std::string &driver, const std::string &meshName, bool compareMetadata )
 {
   //test driver capability
   EXPECT_TRUE( MDAL_DR_saveMeshCapability( MDAL_driverFromName( driver.c_str() ) ) );
@@ -408,6 +459,8 @@ void saveAndCompareMesh( const std::string &filename, const std::string &savedFi
 
   // Compare saved with the original mesh
   compareMeshFrames( meshToSave, savedMesh );
+  if ( compareMetadata )
+    compareMeshMetadata( meshToSave, savedMesh );
 
   MDAL_CloseMesh( savedMesh );
 
@@ -425,5 +478,5 @@ void saveAndCompareMesh( const std::string &filename, const std::string &savedFi
   // Close meshed and delete all the files
   MDAL_CloseMesh( meshToSave );
   MDAL_CloseMesh( savedMesh );
-  std::remove( savedFile.c_str() );
+  ASSERT_TRUE( deleteFile( savedFile ) );
 }

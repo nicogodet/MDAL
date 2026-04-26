@@ -16,10 +16,13 @@
 #include <ctime>
 #include <stdlib.h>
 
-#if defined _WIN32
+#ifdef _MSC_VER
+#ifndef UNICODE
 #define UNICODE
+#endif
 #include <locale>
 #include <codecvt>
+#include <stringapiset.h>
 #endif
 
 std::string MDAL::getEnvVar( const std::string &varname, const std::string &defaultVal )
@@ -37,7 +40,7 @@ std::string MDAL::getEnvVar( const std::string &varname, const std::string &defa
 
 bool MDAL::openInputFile( std::ifstream &inputFileStream, const std::string &fileName, std::ios_base::openmode mode )
 {
-#if defined _MSC_VER
+#ifdef _MSC_VER
   std::wstring_convert< std::codecvt_utf8_utf16< wchar_t > > converter;
   std::wstring wStr = converter.from_bytes( fileName );
   inputFileStream.open( wStr, std::ifstream::in | mode );
@@ -52,7 +55,7 @@ std::ifstream MDAL::openInputFile( const std::string &fileName, std::ios_base::o
 {
   std::ifstream ret;
 
-#if defined _MSC_VER
+#ifdef _MSC_VER
   std::wstring_convert< std::codecvt_utf8_utf16< wchar_t > > converter;
   std::wstring wStr = converter.from_bytes( fileName );
   ret.open( wStr, mode );
@@ -67,7 +70,7 @@ std::ofstream MDAL::openOutputFile( const std::string &fileName, std::ios_base::
 {
   std::ofstream ret;
 
-#if defined _MSC_VER
+#ifdef _MSC_VER
   std::wstring_convert< std::codecvt_utf8_utf16< wchar_t > > converter;
   std::wstring wStr = converter.from_bytes( fileName );
   ret.open( wStr, mode );
@@ -99,6 +102,34 @@ std::string MDAL::readFileToString( const std::string &filename )
     return buffer.str();
   }
   return "";
+}
+
+bool MDAL::deleteFile( const std::string &path )
+{
+  if ( MDAL::fileExists( path ) )
+  {
+#ifdef _MSC_VER
+    std::wstring_convert< std::codecvt_utf8_utf16< wchar_t > > converter;
+    std::wstring wStr = converter.from_bytes( path );
+    return DeleteFileW( wStr.c_str() ) != 0;
+#else
+    return std::remove( path.c_str() ) == 0;
+#endif
+  }
+
+  return false;
+}
+
+bool MDAL::renameFile( const std::string &from, const std::string &to )
+{
+#ifdef _MSC_VER
+  std::wstring_convert< std::codecvt_utf8_utf16< wchar_t > > converter;
+  std::wstring wFrom = converter.from_bytes( from );
+  std::wstring wTo = converter.from_bytes( to );
+  return _wrename( wFrom.c_str(), wTo.c_str() ) == 0;
+#else
+  return std::rename( from.c_str(), to.c_str() ) == 0;
+#endif
 }
 
 bool MDAL::startsWith( const std::string &str, const std::string &substr, ContainsBehaviour behaviour )
@@ -188,6 +219,11 @@ size_t MDAL::toSizeT( const char &str )
 }
 
 size_t MDAL::toSizeT( const double value )
+{
+  return static_cast<size_t>( value );
+}
+
+size_t MDAL::toSizeT( const int value )
 {
   return static_cast<size_t>( value );
 }
@@ -308,7 +344,7 @@ bool MDAL::contains( const std::vector<std::string> &list, const std::string &st
   return std::find( list.begin(), list.end(), str ) != list.end();
 }
 
-std::string MDAL::join( const std::vector<std::string> parts, const std::string &delimiter )
+std::string MDAL::join( const std::vector<std::string> &parts, const std::string &delimiter )
 {
   std::stringstream res;
   for ( auto iter = parts.begin(); iter != parts.end(); iter++ )
@@ -337,7 +373,7 @@ std::string MDAL::leftJustified( const std::string &str, size_t width, char fill
 std::string MDAL::toLower( const std::string &std )
 {
   std::string res( std );
-#ifdef WIN32
+#ifdef _MSC_VER
   //silence algorithm(1443): warning C4244: '=': conversion from 'int' to 'char'
   std::transform( res.begin(), res.end(), res.begin(),
   []( char c ) {return static_cast<char>( ::tolower( c ) );} );
@@ -393,6 +429,42 @@ std::string MDAL::trim( const std::string &s, const std::string &delimiters )
     return s;
 
   return ltrim( rtrim( s, delimiters ), delimiters );
+}
+
+#ifdef _MSC_VER
+static std::string utf8ToWin32Recode( const std::string &utf8String )
+{
+  //from GDAL: ./port/cpl_recode_stub.cpp, CPLWin32Recode()
+
+  // Compute length in wide characters
+  int wlen = MultiByteToWideChar( CP_UTF8, 0, utf8String.c_str(), -1, nullptr, 0 );
+
+  // do the conversion to wide char
+  std::wstring wstr;
+  wstr.resize( MDAL::toSizeT( wlen ) + 1 );
+  wstr.data()[wlen] = 0;
+  MultiByteToWideChar( CP_UTF8, 0, utf8String.c_str(), -1, wstr.data(), wstr.size() );
+
+  int len = WideCharToMultiByte( CP_ACP, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr );
+
+  std::string ret;
+  ret.resize( MDAL::toSizeT( len ) + 1 );
+
+  WideCharToMultiByte( CP_ACP, 0, wstr.c_str(), -1, ret.data(), ret.size(), nullptr, nullptr );
+
+  return ret;
+}
+#endif
+
+std::string MDAL::systemFileName( const std::string &utf8FileName )
+{
+  std::string ret;
+#ifdef _MSC_VER
+  ret = utf8ToWin32Recode( utf8FileName );
+#else
+  ret = utf8FileName;
+#endif
+  return ret;
 }
 
 // http://www.cplusplus.com/faq/sequences/strings/trim/
@@ -580,7 +652,7 @@ MDAL::Statistics MDAL::calculateStatistics( DatasetGroup *grp )
   if ( !grp )
     return ret;
 
-  for ( std::shared_ptr<Dataset> ds : grp->datasets )
+  for ( std::shared_ptr<Dataset> &ds : grp->datasets )
   {
     MDAL::Statistics dsStats = ds->statistics();
     combineStatistics( ret, dsStats );
@@ -709,9 +781,9 @@ static void _addScalarDatasetGroup( MDAL::Mesh *mesh,
   dataset->setTime( 0.0 );
   memcpy( dataset->values(), values.data(), sizeof( double )*values.size() );
   dataset->setStatistics( MDAL::calculateStatistics( dataset ) );
-  group->datasets.push_back( dataset );
+  group->datasets.emplace_back( std::move( dataset ) );
   group->setStatistics( MDAL::calculateStatistics( group ) );
-  mesh->datasetGroups.push_back( group );
+  mesh->datasetGroups.emplace_back( std::move( group ) );
 }
 
 
@@ -767,10 +839,14 @@ std::string MDAL::coordinateToString( double coordinate, int precision )
   return returnString;
 }
 
-std::string MDAL::doubleToString( double value, int precision )
+std::string MDAL::doubleToString( double value, int precision, bool forceScientific )
 {
   std::ostringstream oss;
   oss.precision( precision );
+  if ( forceScientific )
+  {
+    oss.setf( std::ios::scientific );
+  }
   oss << value;
   return oss.str();
 }
@@ -888,7 +964,7 @@ MDAL::DateTime MDAL::parseCFReferenceTime( const std::string &timeInformation, c
   if ( strings.size() > 3 )
   {
     std::string timeString = strings[3];
-    auto timeStringsValue = MDAL::split( timeString, ":" );
+    auto timeStringsValue = MDAL::split( timeString, ':' );
     if ( timeStringsValue.size() == 3 )
     {
       hours = MDAL::toInt( timeStringsValue[0] );
@@ -919,11 +995,11 @@ bool MDAL::getHeaderLine( std::ifstream &stream, std::string &line )
   return true;
 }
 
-MDAL::Error::Error( MDAL_Status status, std::string message, std::string driverName ): status( status ), mssg( message ), driver( driverName ) {}
+MDAL::Error::Error( MDAL_Status status, std::string message, std::string driverName ): status( status ), mssg( std::move( message ) ), driver( std::move( driverName ) ) {}
 
 void MDAL::Error::setDriver( std::string driverName )
 {
-  driver = driverName;
+  driver = std::move( driverName );
 }
 
 void MDAL::parseDriverFromUri( const std::string &uri, std::string &driver )
@@ -1029,20 +1105,25 @@ std::string MDAL::buildAndMergeMeshUris( const std::string &meshFile, const std:
 MDAL::Library::Library( std::string libraryFile )
 {
   d = new Data;
-  d->mLibraryFile = libraryFile;
+  d->mLibraryFile = std::move( libraryFile );
   d->mRef++;
 }
 
 MDAL::Library::~Library()
 {
   d->mRef--;
-#ifdef WIN32
-  if ( d->mLibrary &&  d->mRef == 0 )
-    FreeLibrary( d->mLibrary );
+  if ( d->mRef == 0 )
+  {
+    if ( d->mLibrary )
+    {
+#ifdef _WIN32
+      FreeLibrary( d->mLibrary );
 #else
-  if ( d->mLibrary &&  d->mRef == 0 )
-    dlclose( d->mLibrary );
+      dlclose( d->mLibrary );
 #endif
+    }
+    delete d;
+  }
 }
 
 MDAL::Library::Library( const MDAL::Library &other )
@@ -1070,13 +1151,13 @@ bool MDAL::Library::isValid()
 std::vector<std::string> MDAL::Library::libraryFilesInDir( const std::string &dirPath )
 {
   std::vector<std::string> filesList;
-#if defined(WIN32)
-  WIN32_FIND_DATA data;
+#ifdef _WIN32
+  WIN32_FIND_DATAA data;
   HANDLE hFind;
   std::string pattern = dirPath;
   pattern.push_back( '*' );
 
-  hFind = FindFirstFile( pattern.c_str(), &data );
+  hFind = FindFirstFileA( pattern.c_str(), &data );
 
   if ( hFind == INVALID_HANDLE_VALUE )
     return filesList;
@@ -1087,7 +1168,7 @@ std::vector<std::string> MDAL::Library::libraryFilesInDir( const std::string &di
     if ( !fileName.empty() && fileExtension( fileName ) == ".dll" )
       filesList.push_back( fileName );
   }
-  while ( FindNextFile( hFind, &data ) != 0 );
+  while ( FindNextFileA( hFind, &data ) != 0 );
 
   FindClose( hFind );
 #else
@@ -1098,9 +1179,9 @@ std::vector<std::string> MDAL::Library::libraryFilesInDir( const std::string &di
     std::string fileName( de->d_name );
     if ( !fileName.empty() )
     {
-      std::string extentsion = fileExtension( fileName );
-      if ( extentsion == ".so" || extentsion == ".dylib" )
-        filesList.push_back( fileName );
+      std::string extension = fileExtension( fileName );
+      if ( extension == ".so" || extension == ".dylib" )
+        filesList.emplace_back( std::move( fileName ) );
     }
     de = readdir( dir );
   }
@@ -1115,10 +1196,10 @@ bool MDAL::Library::loadLibrary()
   //should we allow only one successful loading?
   if ( d->mLibrary )
     return false;
-#ifdef WIN32
+#ifdef _WIN32
   UINT uOldErrorMode =
     SetErrorMode( SEM_NOOPENFILEERRORBOX | SEM_FAILCRITICALERRORS );
-  d->mLibrary = LoadLibrary( d->mLibraryFile.c_str() );
+  d->mLibrary = LoadLibraryA( d->mLibraryFile.c_str() );
   SetErrorMode( uOldErrorMode );
 #else
   d->mLibrary = dlopen( d->mLibraryFile.c_str(), RTLD_LAZY );
@@ -1126,3 +1207,4 @@ bool MDAL::Library::loadLibrary()
 
   return d->mLibrary != nullptr;
 }
+

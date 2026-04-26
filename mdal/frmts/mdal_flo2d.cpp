@@ -82,7 +82,7 @@ void MDAL::DriverFlo2D::addStaticDataset(
   dataset->setStatistics( MDAL::calculateStatistics( dataset ) );
   group->datasets.push_back( dataset );
   group->setStatistics( MDAL::calculateStatistics( group ) );
-  mMesh->datasetGroups.push_back( group );
+  mMesh->datasetGroups.emplace_back( std::move( group ) );
 }
 
 
@@ -106,7 +106,12 @@ void MDAL::DriverFlo2D::parseCADPTSFile( const std::string &datFileName, std::ve
       throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Error while loading CADPTS file, wrong lineparts count (3)" );
     }
     CellCenter cc;
-    cc.id = MDAL::toSizeT( lineParts[0] ) - 1; //numbered from 1
+    const size_t linePart0 = MDAL::toSizeT( lineParts[0] );
+    if ( linePart0 < 1 )
+    {
+      throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Error while loading CADPTS file, wrong line part id" );
+    }
+    cc.id = linePart0 - 1; //numbered from 1
     cc.x = MDAL::toDouble( lineParts[1] );
     cc.y = MDAL::toDouble( lineParts[2] );
     cells.push_back( cc );
@@ -144,8 +149,18 @@ void MDAL::DriverFlo2D::parseCHANBANKFile( const std::string &datFileName,
     {
       throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Error while loading CHANBANK file, wrong lineparts count (2)" );
     }
-    int leftBank = MDAL::toInt( MDAL::toSizeT( lineParts[0] ) ) - 1;  //numbered from 1
-    int rightBank = MDAL::toInt( MDAL::toSizeT( lineParts[1] ) ) - 1;
+    const size_t linePart0 = MDAL::toSizeT( lineParts[0] );
+    if ( linePart0 < 1 )
+    {
+      throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Error while loading CHANBANK file, wrong line value for left bank" );
+    }
+    const size_t leftBank = linePart0 - 1;  //numbered from 1
+    const size_t linePart1 = MDAL::toSizeT( lineParts[1] );
+    if ( linePart1 < 1 )
+    {
+      throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Error while loading CHANBANK file, wrong line value for right bank" );
+    }
+    const size_t rightBank = linePart1 - 1;
 
     std::map<size_t, size_t>::const_iterator it = cellIdToVertices.find( rightBank );
     if ( it != cellIdToVertices.end() )
@@ -157,7 +172,7 @@ void MDAL::DriverFlo2D::parseCHANBANKFile( const std::string &datFileName,
       else
         itDupplicated->second.push_back( vertexIndex );
     }
-    else if ( rightBank >= 0 )
+    else
     {
       cellIdToVertices[rightBank] = vertexIndex;
     }
@@ -198,7 +213,7 @@ void MDAL::DriverFlo2D::parseCHANFile( const std::string &datFileName, const std
         throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Error while loading CHAN file, wrong chanel element line" );
       }
       int currentCellId = MDAL::toInt( MDAL::toSizeT( lineParts[1] ) ) - 1;
-      if ( previousCellId >= 0 )
+      if ( previousCellId >= 0 && currentCellId >= 0 )
       {
         std::map<size_t, size_t>::const_iterator it1 = cellIdToVertices.find( previousCellId );
         std::map<size_t, size_t>::const_iterator it2 = cellIdToVertices.find( currentCellId );
@@ -217,8 +232,14 @@ void MDAL::DriverFlo2D::parseCHANFile( const std::string &datFileName, const std
         {
           throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Error while loading CHAN file, wrong confluence line:" );
         }
-        std::map<size_t, size_t>::const_iterator it1 = cellIdToVertices.find( MDAL::toSizeT( lineParts[1] ) - 1 );
-        std::map<size_t, size_t>::const_iterator it2 = cellIdToVertices.find( MDAL::toSizeT( lineParts[2] ) - 1 );
+        const size_t linePart1 = MDAL::toSizeT( lineParts[1] );
+        const size_t linePart2 = MDAL::toSizeT( lineParts[2] );
+        if ( linePart1 < 1 || linePart2 < 1 )
+        {
+          throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Error while loading CHAN file, wrong confluence line:" );
+        }
+        std::map<size_t, size_t>::const_iterator it1 = cellIdToVertices.find( linePart1 - 1 );
+        std::map<size_t, size_t>::const_iterator it2 = cellIdToVertices.find( linePart2 - 1 );
         if ( it1 != cellIdToVertices.end() && it2 != cellIdToVertices.end() )
           edges.push_back( {it1->second, it2->second} );
       }
@@ -379,7 +400,7 @@ void MDAL::DriverFlo2D::parseHYCHANFile( const std::string &datFileName, const s
       dataset->setStatistics( MDAL::calculateStatistics( dataset ) );
 
     datasetGroup->setStatistics( MDAL::calculateStatistics( datasetGroup ) );
-    mMesh->datasetGroups.push_back( datasetGroup );
+    mMesh->datasetGroups.emplace_back( std::move( datasetGroup ) );
   }
 }
 
@@ -503,7 +524,12 @@ void MDAL::DriverFlo2D::parseFPLAINFile( std::vector<double> &elevations,
 
     if ( !cellSizeCalculated )
     {
-      size_t cc_i = MDAL::toSizeT( lineParts[0] ) - 1; //numbered from 1
+      const size_t linePart0 = MDAL::toSizeT( lineParts[0] );
+      if ( linePart0 < 1 )
+      {
+        throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Error while loading FPLAIN.DAT file, invalid line part value" );
+      }
+      size_t cc_i = linePart0 - 1; //numbered from 1
       for ( int i = 1; i < 5; ++i )  //search the first cell that have a neighbor to calculate cell size
       {
         int neighborCell = MDAL::toInt( lineParts[i] );
@@ -554,7 +580,6 @@ void MDAL::DriverFlo2D::parseTIMDEPFile( const std::string &datFileName, const s
   std::string line;
 
   size_t nVertexs = mMesh->verticesCount();
-  size_t ntimes = 0;
 
   RelativeTimestamp time = RelativeTimestamp();
   size_t face_idx = 0;
@@ -598,7 +623,6 @@ void MDAL::DriverFlo2D::parseTIMDEPFile( const std::string &datFileName, const s
     if ( lineParts.size() == 1 )
     {
       time = RelativeTimestamp( MDAL::toDouble( line ), RelativeTimestamp::hours );
-      ntimes++;
 
       if ( depthDataset ) addDatasetToGroup( depthDsGroup, depthDataset );
       if ( flowDataset ) addDatasetToGroup( flowDsGroup, flowDataset );
@@ -638,17 +662,17 @@ void MDAL::DriverFlo2D::parseTIMDEPFile( const std::string &datFileName, const s
     }
   }
 
-  if ( depthDataset ) addDatasetToGroup( depthDsGroup, depthDataset );
-  if ( flowDataset ) addDatasetToGroup( flowDsGroup, flowDataset );
-  if ( waterLevelDataset ) addDatasetToGroup( waterLevelDsGroup, waterLevelDataset );
+  if ( depthDataset ) addDatasetToGroup( depthDsGroup, std::move( depthDataset ) );
+  if ( flowDataset ) addDatasetToGroup( flowDsGroup, std::move( flowDataset ) );
+  if ( waterLevelDataset ) addDatasetToGroup( waterLevelDsGroup, std::move( waterLevelDataset ) );
 
   depthDsGroup->setStatistics( MDAL::calculateStatistics( depthDsGroup ) );
   flowDsGroup->setStatistics( MDAL::calculateStatistics( flowDsGroup ) );
   waterLevelDsGroup->setStatistics( MDAL::calculateStatistics( waterLevelDsGroup ) );
 
-  mMesh->datasetGroups.push_back( depthDsGroup );
-  mMesh->datasetGroups.push_back( flowDsGroup );
-  mMesh->datasetGroups.push_back( waterLevelDsGroup );
+  mMesh->datasetGroups.emplace_back( std::move( depthDsGroup ) );
+  mMesh->datasetGroups.emplace_back( std::move( flowDsGroup ) );
+  mMesh->datasetGroups.emplace_back( std::move( waterLevelDsGroup ) );
 }
 
 
@@ -968,12 +992,12 @@ bool MDAL::DriverFlo2D::parseHDF5Datasets( MemoryMesh *mesh, const std::string &
           output->setScalarValue( i, val );
         }
       }
-      addDatasetToGroup( ds, output );
+      addDatasetToGroup( ds, std::move( output ) );
     }
 
     // TODO use mins & maxs arrays
     ds->setStatistics( MDAL::calculateStatistics( ds ) );
-    mesh->datasetGroups.push_back( ds );
+    mesh->datasetGroups.emplace_back( std::move( ds ) );
 
   }
 
@@ -996,7 +1020,7 @@ MDAL::DriverFlo2D::DriverFlo2D()
   : Driver(
       "FLO2D",
       "Flo2D",
-      "*.nc;;*.DAT",
+      "*.nc;;*.DAT;;*.OUT",
       Capability::ReadMesh | Capability::ReadDatasets | Capability::WriteDatasetsOnFaces )
 {
 
@@ -1078,6 +1102,7 @@ void MDAL::DriverFlo2D::load( const std::string &uri, MDAL::Mesh *mesh )
 
 std::unique_ptr< MDAL::Mesh > MDAL::DriverFlo2D::load( const std::string &resultsFile, const std::string &meshName )
 {
+  MDAL::Log::resetLastStatus();
   mDatFileName = resultsFile;
   std::string mesh2DTopologyFile( fileNameFromDir( resultsFile, "FPLAIN.DAT" ) );
   std::string mesh1DTopologyFile( fileNameFromDir( resultsFile, "CHAN.DAT" ) );
@@ -1104,7 +1129,7 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverFlo2D::loadMesh1d()
     createMesh1d( mDatFileName, cells, cellsIdToVertex );
     parseHYCHANFile( mDatFileName, cellsIdToVertex );
   }
-  catch ( MDAL::Error err )
+  catch ( MDAL::Error &err )
   {
     MDAL::Log::error( err, name() );
   }
@@ -1115,7 +1140,6 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverFlo2D::loadMesh1d()
 
 std::unique_ptr<MDAL::Mesh> MDAL::DriverFlo2D::loadMesh2d()
 {
-  MDAL::Log::resetLastStatus();
   mMesh.reset();
   std::vector<CellCenter> cells;
 
@@ -1148,9 +1172,9 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverFlo2D::loadMesh2d()
     MDAL::Log::error( error, name(), "error occurred while loading file " + mDatFileName );
     mMesh.reset();
   }
-  catch ( MDAL::Error err )
+  catch ( MDAL::Error &err )
   {
-    MDAL::Log::error( err, name() );
+    MDAL::Log::error( std::move( err ), name() );
   }
 
   return std::unique_ptr<Mesh>( mMesh.release() );
@@ -1176,15 +1200,15 @@ bool MDAL::DriverFlo2D::saveNewHDF5File( DatasetGroup *dsGroup )
   if ( !file.isValid() ) return true;
 
   // Create float dataset File Version
-  HdfDataset dsFileVersion( file.id(), "/File Version", H5T_NATIVE_FLOAT );
+  HdfDataset dsFileVersion = file.dataset( "/File Version", H5T_NATIVE_FLOAT );
   dsFileVersion.write( 1.0f );
 
   // Create string dataset File Type
-  HdfDataset dsFileType( file.id(), "/File Type", HdfDataType::createString() );
+  HdfDataset dsFileType = file.dataset( "/File Type", HdfDataType::createString() );
   dsFileType.write( "Xmdf" );
 
   // Create group TIMDEP NETCDF OUTPUT RESULTS
-  HdfGroup groupTNOR = HdfGroup::create( file.id(), "/TIMDEP NETCDF OUTPUT RESULTS" );
+  HdfGroup groupTNOR = file.createGroup( "/TIMDEP NETCDF OUTPUT RESULTS" );
 
   // Create attribute
   HdfAttribute attTNORGrouptype( groupTNOR.id(), "Grouptype", HdfDataType::createString() );
@@ -1257,7 +1281,7 @@ bool MDAL::DriverFlo2D::appendGroup( HdfFile &file, MDAL::DatasetGroup *dsGroup,
   {
     dsGroupName = dsGroup->name() + "_" + std::to_string( i ); // make sure we have unique group name
   }
-  HdfGroup group = HdfGroup::create( groupTNOR.id(), "/TIMDEP NETCDF OUTPUT RESULTS/" + dsGroupName );
+  HdfGroup group = file.createGroup( groupTNOR.id(), "/TIMDEP NETCDF OUTPUT RESULTS/" + dsGroupName );
 
   HdfAttribute attDataType( group.id(), "Data Type", H5T_NATIVE_INT );
   attDataType.write( 0 );
@@ -1277,19 +1301,19 @@ bool MDAL::DriverFlo2D::appendGroup( HdfFile &file, MDAL::DatasetGroup *dsGroup,
   else
     attGrouptype.write( "DATASET VECTOR" );
 
-  HdfAttribute attTimeUnits( group.id(), "TimeUnits", dtMaxString );
+  HdfAttribute attTimeUnits( group.id(), "TimeUnits", std::move( dtMaxString ) );
   attTimeUnits.write( "Hours" );
 
-  HdfDataset dsMaxs( file.id(), "/TIMDEP NETCDF OUTPUT RESULTS/" + dsGroupName + "/Maxs", H5T_NATIVE_FLOAT, timesCountVec );
+  HdfDataset dsMaxs = file.dataset( "/TIMDEP NETCDF OUTPUT RESULTS/" + dsGroupName + "/Maxs", H5T_NATIVE_FLOAT, timesCountVec );
   dsMaxs.write( maximums );
 
-  HdfDataset dsMins( file.id(), "/TIMDEP NETCDF OUTPUT RESULTS/" + dsGroupName + "/Mins", H5T_NATIVE_FLOAT, timesCountVec );
+  HdfDataset dsMins = file.dataset( "/TIMDEP NETCDF OUTPUT RESULTS/" + dsGroupName + "/Mins", H5T_NATIVE_FLOAT, timesCountVec );
   dsMins.write( minimums );
 
-  HdfDataset dsTimes( file.id(), "/TIMDEP NETCDF OUTPUT RESULTS/" + dsGroupName + "/Times", H5T_NATIVE_DOUBLE, timesCountVec );
+  HdfDataset dsTimes = file.dataset( "/TIMDEP NETCDF OUTPUT RESULTS/" + dsGroupName + "/Times", H5T_NATIVE_DOUBLE, timesCountVec );
   dsTimes.write( times );
 
-  HdfDataset dsValues( file.id(), "/TIMDEP NETCDF OUTPUT RESULTS/" + dsGroupName + "/Values", H5T_NATIVE_FLOAT, dscValues );
+  HdfDataset dsValues = file.dataset( "/TIMDEP NETCDF OUTPUT RESULTS/" + dsGroupName + "/Values", H5T_NATIVE_FLOAT, std::move( dscValues ) );
   dsValues.write( values );
 
   return false; //OK
@@ -1322,7 +1346,7 @@ bool MDAL::DriverFlo2D::persist( DatasetGroup *group )
     MDAL::Log::error( error, name(), "error occurred" );
     return true;
   }
-  catch ( MDAL::Error err )
+  catch ( MDAL::Error &err )
   {
     MDAL::Log::error( err, name() );
     return true;

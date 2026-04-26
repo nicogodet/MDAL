@@ -56,6 +56,7 @@ MDAL::TuflowFVDataset2D::TuflowFVDataset2D(
   int ncidY,
   Classification classificationX,
   Classification classificationY,
+  bool supportActiveFlag,
   int ncidActive,
   CFDatasetGroupInfo::TimeLocation timeLocation,
   size_t timesteps,
@@ -69,17 +70,17 @@ MDAL::TuflowFVDataset2D::TuflowFVDataset2D(
       fillValY,
       ncidX,
       ncidY,
-      classificationX,
-      classificationY,
+      std::move( classificationX ),
+      std::move( classificationY ),
       timeLocation,
       timesteps,
       values,
       ts,
-      ncFile
+      std::move( ncFile )
     )
   , mNcidActive( ncidActive )
 {
-  setSupportsActiveFlag( true );
+  setSupportsActiveFlag( supportActiveFlag );
 }
 
 size_t MDAL::TuflowFVDataset2D::activeData( size_t indexStart, size_t count, int *buffer )
@@ -97,7 +98,7 @@ size_t MDAL::TuflowFVDataset2D::activeData( size_t indexStart, size_t count, int
 
 MDAL::TuflowFVDataset3D::TuflowFVDataset3D( MDAL::DatasetGroup *parent,
     int ncidX,
-    int ncidY,
+    int ncidY, bool supportActiveFlag,
     int ncidActive, CFDatasetGroupInfo::TimeLocation timeLocation,
     size_t timesteps,
     size_t volumesCount,
@@ -117,7 +118,7 @@ MDAL::TuflowFVDataset3D::TuflowFVDataset3D( MDAL::DatasetGroup *parent,
   , mTs( ts )
   , mNcFile( ncFile )
 {
-  setSupportsActiveFlag( true );
+  setSupportsActiveFlag( supportActiveFlag );
 
   if ( ncFile )
   {
@@ -390,7 +391,7 @@ void MDAL::DriverTuflowFV::populateFaces( MDAL::Faces &faces )
       assert( val < vertexCount );
       idxs.push_back( val );
     }
-    faces[i] = idxs;
+    faces[i] = std::move( idxs );
   }
 }
 
@@ -508,7 +509,7 @@ void MDAL::DriverTuflowFV::parseNetCDFVariableMetadata( int varid,
     }
     else
     {
-      name = long_name;
+      name = std::move( long_name );
     }
   }
 }
@@ -532,6 +533,7 @@ std::shared_ptr<MDAL::Dataset> MDAL::DriverTuflowFV::create2DDataset(
         dsi.ncid_y,
         dsi.classification_x,
         dsi.classification_y,
+        dsi.timeLocation != CFDatasetGroupInfo::NoTimeDimension,
         mNcFile->arrId( "stat" ),
         dsi.timeLocation,
         dsi.nTimesteps,
@@ -554,6 +556,7 @@ std::shared_ptr<MDAL::Dataset> MDAL::DriverTuflowFV::create3DDataset( std::share
         group.get(),
         dsi.ncid_x,
         dsi.ncid_y,
+        dsi.timeLocation != CFDatasetGroupInfo::NoTimeDimension,
         mNcFile->arrId( "stat" ),
         dsi.timeLocation,
         dsi.nTimesteps,

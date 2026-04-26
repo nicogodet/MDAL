@@ -69,9 +69,8 @@ void MDAL::SelafinFile::initialize()
   mParsed = false;
 }
 
-void MDAL::SelafinFile::parseFile()
+void MDAL::SelafinFile::parseMeshFrame()
 {
-
   /* 1 record containing the title of the study (72 characters) and a 8 characters
   string indicating the type of format (SERAFIN or SERAFIND)
   */
@@ -117,7 +116,7 @@ void MDAL::SelafinFile::parseFile()
   mXOrigin = static_cast<double>( mParameters[2] );
   mYOrigin = static_cast<double>( mParameters[3] );
 
-  if ( mParameters[6] != 0 )
+  if ( mParameters[6] != 0 && mParameters[6] != 1 ) //some tools set this value to one for 2D mesh
   {
     // would need additional parsing
     throw MDAL::Error( MDAL_Status::Err_MissingDriver, "File " + mFileName + " would need additional parsing" );
@@ -161,10 +160,15 @@ void MDAL::SelafinFile::parseFile()
 
   /* 1 record containing table X (real array of dimension NPOIN containing the
      abscisse of the points)
+     AND here, we can know if float of this file is simple or double precision:
+     result of size of record divided by number of vertices gives the byte size of the float:
+     -> 4 : simple precision -> 8 : double precision
   */
   size = mVerticesCount;
-  if ( ! checkDoubleArraySize( size ) )
-    throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading abscisse values" );
+  size_t recordSize = readSizeT();
+  mStreamInFloatPrecision = recordSize / size == 4;
+  if ( !mStreamInFloatPrecision && recordSize / size != 8 )
+    throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem: could not determine if simple or double precision" );
   mXStreamPosition = passThroughDoubleArray( size );
 
   /* 1 record containing table Y (real array of dimension NPOIN containing the
@@ -174,6 +178,11 @@ void MDAL::SelafinFile::parseFile()
   if ( ! checkDoubleArraySize( size ) )
     throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading abscisse values" );
   mYStreamPosition = passThroughDoubleArray( size );
+}
+
+void MDAL::SelafinFile::parseFile()
+{
+  parseMeshFrame();
 
   /* Next, for each time step, the following are found:
      - 1 record containing time T (real),
@@ -206,20 +215,6 @@ std::string MDAL::SelafinFile::readHeader()
 
   std::string title = header.substr( 0, 72 );
   title = trim( title );
-
-  std::string varType = header.substr( 72, 8 );
-  varType = trim( varType );
-
-  if ( varType == "SERAFIN" )
-  {
-    mStreamInFloatPrecision = true;
-  }
-  else if ( varType == "SERAFIND" )
-  {
-    mStreamInFloatPrecision = false;
-  }
-  else
-    throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Not found stream precision" );
 
   if ( header.size() < 80 ) // IF "SERAFIN", the readString method remove the last character that is a space
     header.append( " " );
@@ -256,7 +251,7 @@ std::unique_ptr<MDAL::Mesh> MDAL::SelafinFile::createMesh( const std::string &fi
   reader->parseFile();
 
   std::unique_ptr<Mesh> mesh( new MeshSelafin( fileName, reader ) );
-  populateDataset( mesh.get(), reader );
+  populateDataset( mesh.get(), std::move( reader ) );
 
   return mesh;
 }
@@ -285,7 +280,7 @@ void MDAL::SelafinFile::populateDataset( MDAL::Mesh *mesh, const std::string &fi
   if ( mesh->verticesCount() != reader->verticesCount() || mesh->facesCount() != reader->facesCount() )
     throw MDAL::Error( MDAL_Status::Err_IncompatibleDataset, "Faces or vertices counts in the file are not the same" );
 
-  populateDataset( mesh, reader );
+  populateDataset( mesh, std::move( reader ) );
 }
 
 size_t MDAL::SelafinFile::facesCount()
@@ -632,7 +627,7 @@ void MDAL::SelafinFile::ignoreArrayLength( )
 MDAL::DriverSelafin::DriverSelafin():
   Driver( "SELAFIN",
           "Selafin File",
-          "*.slf",
+          "*.slf;;*.ser;;*.geo;;*.res",
           Capability::ReadMesh | Capability::SaveMesh | Capability::WriteDatasetsOnVertices | Capability::ReadDatasets
         )
 {
@@ -652,7 +647,7 @@ bool MDAL::DriverSelafin::canReadMesh( const std::string &uri )
   try
   {
     SelafinFile file( uri );
-    file.readHeader();
+    file.parseMeshFrame();
     return true;
   }
   catch ( ... )
@@ -668,7 +663,7 @@ bool MDAL::DriverSelafin::canReadDatasets( const std::string &uri )
   try
   {
     SelafinFile file( uri );
-    file.readHeader();
+    file.parseMeshFrame();
     return true;
   }
   catch ( ... )
@@ -691,7 +686,7 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverSelafin::load( const std::string &meshFi
     MDAL::Log::error( error, name(), "Error while loading file " + meshFile );
     mesh.reset();
   }
-  catch ( MDAL::Error err )
+  catch ( MDAL::Error &err )
   {
     MDAL::Log::error( err, name() );
     mesh.reset();
@@ -711,7 +706,7 @@ void MDAL::DriverSelafin::load( const std::string &datFile, MDAL::Mesh *mesh )
   {
     MDAL::Log::error( error, name(), "Error while loading dataset in file " + datFile );
   }
-  catch ( MDAL::Error err )
+  catch ( MDAL::Error &err )
   {
     MDAL::Log::error( err, name() );
   }
@@ -730,7 +725,7 @@ bool MDAL::DriverSelafin::persist( MDAL::DatasetGroup *group )
     saveDatasetGroupOnFile( group );
     return false;
   }
-  catch ( MDAL::Error err )
+  catch ( MDAL::Error &err )
   {
     MDAL::Log::error( err, name() );
     return true;
@@ -761,7 +756,7 @@ bool MDAL::DriverSelafin::saveDatasetGroupOnFile( MDAL::DatasetGroup *datasetGro
 MDAL::MeshSelafin::MeshSelafin( const std::string &uri,
                                 std::shared_ptr<MDAL::SelafinFile> reader ):
   Mesh( "SELAFIN", reader->verticesPerFace(), uri )
-  , mReader( reader )
+  , mReader( std::move( reader ) )
 {}
 
 std::unique_ptr<MDAL::MeshVertexIterator> MDAL::MeshSelafin::readVertices()
@@ -827,7 +822,7 @@ void MDAL::MeshSelafin::calculateExtent() const
 }
 
 MDAL::MeshSelafinVertexIterator::MeshSelafinVertexIterator( std::shared_ptr<MDAL::SelafinFile> reader ):
-  mReader( reader )
+  mReader( std::move( reader ) )
 {}
 
 size_t MDAL::MeshSelafinVertexIterator::next( size_t vertexCount, double *coordinates )
@@ -847,7 +842,7 @@ size_t MDAL::MeshSelafinVertexIterator::next( size_t vertexCount, double *coordi
 }
 
 MDAL::MeshSelafinFaceIterator::MeshSelafinFaceIterator( std::shared_ptr<MDAL::SelafinFile> reader ):
-  mReader( reader )
+  mReader( std::move( reader ) )
 {}
 
 size_t MDAL::MeshSelafinFaceIterator::next( size_t faceOffsetsBufferLen, int *faceOffsetsBuffer, size_t vertexIndicesBufferLen, int *vertexIndicesBuffer )
@@ -892,7 +887,7 @@ size_t MDAL::MeshSelafinFaceIterator::next( size_t faceOffsetsBufferLen, int *fa
 MDAL::DatasetSelafin::DatasetSelafin( MDAL::DatasetGroup *parent,
                                       std::shared_ptr<MDAL::SelafinFile> reader, size_t timeStepIndex ):
   Dataset2D( parent )
-  , mReader( reader )
+  , mReader( std::move( reader ) )
   , mTimeStepIndex( timeStepIndex )
 {
 }
@@ -1167,7 +1162,7 @@ void MDAL::DriverSelafin::save( const std::string &fileName, const std::string &
   std::ofstream file = MDAL::openOutputFile( fileName.c_str(), std::ofstream::binary );
 
   std::string header( "Selafin file created by MDAL library" );
-  std::string remainingStr( " ", 72 - header.size() );
+  std::string remainingStr( 72 - header.size(), ' ' );
   header.append( remainingStr );
   header.append( "SERAFIND" );
   assert( header.size() == 80 );
@@ -1535,13 +1530,11 @@ bool MDAL::SelafinFile::addDatasetGroup( MDAL::DatasetGroup *datasetGroup )
   if ( datasetGroup->uri() == mFileName )
     datasetGroup->mesh()->closeSource();
 
-  if ( std::remove( mFileName.c_str() ) != 0 )
+  if ( !MDAL::deleteFile( mFileName ) || !MDAL::renameFile( tempFileName, mFileName ) )
   {
-    std::remove( tempFileName.c_str() );
+    MDAL::deleteFile( tempFileName );
     throw MDAL::Error( MDAL_Status::Err_FailToWriteToDisk, "Unable to write dataset in file" );
   }
-
-  std::rename( tempFileName.c_str(), mFileName.c_str() );
 
   parseFile();
 

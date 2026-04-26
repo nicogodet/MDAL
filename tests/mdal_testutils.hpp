@@ -22,10 +22,10 @@ void set_mdal_driver_path( const std::string &dirname );
 void init_test();
 void finalize_test();
 
-std::string test_file( std::string basename );
-std::string tmp_file( std::string basename );
+std::string test_file( const std::string &basename );
+std::string tmp_file( const std::string &basename );
 void copy( const std::string &src, const std::string &dest );
-void deleteFile( const std::string &path );
+bool deleteFile( const std::string &path );
 bool fileExists( const std::string &filename );
 
 // Mesh
@@ -62,7 +62,8 @@ bool compareVectors( const std::vector<int> &a, const std::vector<int> &b );
 
 //! Same vertices (coords), faces, edges and connectivity between them
 void compareMeshFrames( MDAL_MeshH meshA, MDAL_MeshH meshB );
-void saveAndCompareMesh( const std::string &filename, const std::string &savedFile, const std::string &driver, const std::string &meshName = "" );
+void compareMeshMetadata( MDAL_MeshH meshA, MDAL_MeshH meshB );
+void saveAndCompareMesh( const std::string &filename, const std::string &savedFile, const std::string &driver, const std::string &meshName = "", bool compareMetadata = false );
 
 //! Compare duration with millisecond precision
 bool compareDurationInHours( double h1, double h2 );
