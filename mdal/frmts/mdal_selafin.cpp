@@ -1054,6 +1054,19 @@ static std::vector<int> computeIPOBO(
   if ( boundaryAdj.empty() )
     return ipobo;  // No boundary (closed surface or empty mesh)
 
+  // Warn once if any boundary node is non-manifold (>2 boundary neighbours).
+  // TODO: implement angle-based traversal for non-manifold boundaries
+  //       (see OpenTELEMAC bord3d.f / PyTelTools for reference).
+  size_t nonManifoldCount = 0;
+  for ( const auto &kv : boundaryAdj )
+    if ( kv.second.size() > 2 )
+      ++nonManifoldCount;
+  if ( nonManifoldCount > 0 )
+    MDAL::Log::warning( MDAL_Status::Warn_InvalidElements,
+                        "SELAFIN: non-manifold boundary detected (" +
+                        std::to_string( nonManifoldCount ) +
+                        " nodes with >2 boundary neighbours), IPOBO order may be ambiguous" );
+
   // --- Step 3: trace contours and number boundary nodes ---
   std::unordered_set<int> visited;
   int boundaryIdx = 1;
