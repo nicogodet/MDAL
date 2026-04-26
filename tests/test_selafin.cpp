@@ -329,7 +329,7 @@ TEST( MeshSLFTest, IPOBOComputation )
 
   // Boundary nodes should be a small fraction of total nodes
   EXPECT_LT( static_cast<int>( sorted.size() ), static_cast<int>( ipobo.size() ) )
-    << "All nodes appear to be boundary nodes";
+      << "All nodes appear to be boundary nodes";
 
   // Geometric validation: bbox-extreme vertices must be on the boundary
   EXPECT_GT( ipobo[idxMinX], 0 ) << "Vertex at min X is not marked boundary";
