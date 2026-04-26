@@ -13,7 +13,7 @@
 #include <string>
 #include <vector>
 #include <map>
-#include <unordered_map>
+#include <unordered_set>
 #include <limits>
 #include <cassert>
 #include <memory>
@@ -1040,8 +1040,8 @@ static std::vector<int> computeIPOBO(
   }
 
   // --- Step 2: build boundary adjacency list (1-based) ---
-  // O(1) lookup, O(k) traversal per contour.
-  std::unordered_map<int, std::vector<int>> boundaryAdj;
+  // std::map (not unordered) for deterministic iteration when picking start nodes.
+  std::map<int, std::vector<int>> boundaryAdj;
   for ( const auto &kv : edgeCounts )
   {
     if ( kv.second == 1 )
@@ -1055,7 +1055,7 @@ static std::vector<int> computeIPOBO(
     return ipobo;  // No boundary (closed surface or empty mesh)
 
   // --- Step 3: trace contours and number boundary nodes ---
-  std::unordered_map<int, bool> visited;
+  std::unordered_set<int> visited;
   int boundaryIdx = 1;
   bool isFirstContour = true;
 
@@ -1067,7 +1067,7 @@ static std::vector<int> computeIPOBO(
     for ( const auto &kv : boundaryAdj )
     {
       int node = kv.first;
-      if ( !visited[node] )
+      if ( visited.count( node ) == 0 )
       {
         double xy = x[node - 1] + y[node - 1];
         if ( xy < minXY )
@@ -1086,7 +1086,7 @@ static std::vector<int> computeIPOBO(
     bool ok = true;
     while ( true )
     {
-      visited[currNode] = true;
+      visited.insert( currNode );
       contour.push_back( currNode );
 
       // Find the next unvisited neighbour (or the start node to close the loop)
@@ -1095,7 +1095,7 @@ static std::vector<int> computeIPOBO(
       // Prefer unvisited neighbours; accept startNode only to close the loop
       for ( int nb : neighbours )
       {
-        if ( !visited[nb] )
+        if ( visited.count( nb ) == 0 )
         {
           // Among unvisited neighbours pick the one with minimum x+y for determinism
           if ( nextNode == -1 || ( x[nb - 1] + y[nb - 1] ) < ( x[nextNode - 1] + y[nextNode - 1] ) )
