@@ -269,6 +269,13 @@ std::vector<int> MDAL::SelafinFile::readIPOBO( const std::string &fileName )
   return reader.readIntArr( reader.mIPOBOStreamPosition, 0, reader.mVerticesCount );
 }
 
+std::vector<int> MDAL::SelafinFile::cachedIPOBO()
+{
+  if ( !mParsed )
+    parseFile();
+  return readIntArr( mIPOBOStreamPosition, 0, mVerticesCount );
+}
+
 void MDAL::SelafinFile::populateDataset( MDAL::Mesh *mesh, const std::string &fileName )
 {
   std::shared_ptr<SelafinFile> reader = std::make_shared<SelafinFile>( fileName );

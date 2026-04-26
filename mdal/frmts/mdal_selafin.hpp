@@ -58,6 +58,9 @@ namespace MDAL
       //! Returns the IPOBO array from the file (0 for interior nodes, >0 for boundary nodes)
       static std::vector<int> readIPOBO( const std::string &fileName );
 
+      //! Returns the IPOBO array of an already-parsed instance (no re-open)
+      std::vector<int> cachedIPOBO();
+
     private:
 
       //! Initializes and open the file file with the \a fileName
@@ -266,6 +269,9 @@ namespace MDAL
       BBox extent() const override;
 
       void closeSource() override;
+
+      //! Returns the underlying SelafinFile reader
+      std::shared_ptr<SelafinFile> reader() const { return mReader; }
 
     private:
       mutable bool mIsExtentUpToDate = false;
