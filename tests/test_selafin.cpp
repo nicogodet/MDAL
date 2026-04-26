@@ -276,12 +276,30 @@ TEST( MeshSLFTest, IPOBOComputation )
   // Save a mesh and verify that the written IPOBO array is correct:
   //   - boundary nodes must have consecutive values starting at 1
   //   - interior nodes must be 0
-  //   - at least some boundary nodes must exist
+  //   - vertices at the bbox extremes must be marked as boundary nodes
   std::string savedFile = tmp_file( "/ipobo_test.slf" );
 
   MDAL_MeshH mesh = MDAL_LoadMesh( test_file( "/slf/example.slf" ).c_str() );
   ASSERT_NE( mesh, nullptr );
   ASSERT_EQ( MDAL_Status::None, MDAL_LastStatus() );
+
+  // Locate vertices at bbox extremes — they are necessarily on the external boundary.
+  const int vCount = MDAL_M_vertexCount( mesh );
+  ASSERT_GT( vCount, 0 );
+  int idxMinX = 0, idxMaxX = 0, idxMinY = 0, idxMaxY = 0;
+  double minX = getVertexXCoordinatesAt( mesh, 0 );
+  double maxX = minX;
+  double minY = getVertexYCoordinatesAt( mesh, 0 );
+  double maxY = minY;
+  for ( int i = 1; i < vCount; ++i )
+  {
+    double xi = getVertexXCoordinatesAt( mesh, i );
+    double yi = getVertexYCoordinatesAt( mesh, i );
+    if ( xi < minX ) { minX = xi; idxMinX = i; }
+    if ( xi > maxX ) { maxX = xi; idxMaxX = i; }
+    if ( yi < minY ) { minY = yi; idxMinY = i; }
+    if ( yi > maxY ) { maxY = yi; idxMaxY = i; }
+  }
 
   MDAL_SaveMesh( mesh, savedFile.c_str(), "SELAFIN" );
   ASSERT_EQ( MDAL_Status::None, MDAL_LastStatus() );
@@ -306,6 +324,12 @@ TEST( MeshSLFTest, IPOBOComputation )
   // Boundary nodes should be a small fraction of total nodes
   EXPECT_LT( static_cast<int>( sorted.size() ), static_cast<int>( ipobo.size() ) )
     << "All nodes appear to be boundary nodes";
+
+  // Geometric validation: bbox-extreme vertices must be on the boundary
+  EXPECT_GT( ipobo[idxMinX], 0 ) << "Vertex at min X is not marked boundary";
+  EXPECT_GT( ipobo[idxMaxX], 0 ) << "Vertex at max X is not marked boundary";
+  EXPECT_GT( ipobo[idxMinY], 0 ) << "Vertex at min Y is not marked boundary";
+  EXPECT_GT( ipobo[idxMaxY], 0 ) << "Vertex at max Y is not marked boundary";
 }
 
 static MDAL_DatasetGroupH addNewScalarDatasetGroup( MDAL_MeshH mesh, MDAL_DriverH driver, std::string file )
