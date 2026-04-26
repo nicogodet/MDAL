@@ -1183,63 +1183,93 @@ void MDAL::DriverSelafin::save( const std::string &fileName, const std::string &
   elem[3] = 1;
   writeValueArrayRecord( file, elem );
 
-  // Pre-read all faces into memory (needed to compute IPOBO before writing)
-  std::vector<int> allConnectivity;
-  allConnectivity.reserve( facesCount * verticesPerFace );
+  // Reuse the IPOBO from disk when saving an unmodified MeshSelafin (round-trip).
+  // QGIS edits force a conversion to MemoryMesh, so a successful dynamic_cast
+  // guarantees the topology matches the source file.
+  std::vector<int> cachedIpobo;
+  if ( auto *meshSlf = dynamic_cast<MeshSelafin *>( mesh ) )
+    cachedIpobo = meshSlf->reader()->cachedIPOBO();
+
+  if ( !cachedIpobo.empty() )
   {
-    int bufSize = BUFFER_SIZE;
-    std::vector<int> faceOffsetBuffer( bufSize );
-    std::unique_ptr<MeshFaceIterator> faceIter = mesh->readFaces();
-    size_t count = 0;
-    do
+    // Stream the connectivity in chunks; no need to keep the whole mesh in RAM.
+    writeInt( file, MDAL::toInt( facesCount * verticesPerFace * 4 ) );
+    if ( facesCount > 0 )
     {
+      int bufSize = BUFFER_SIZE;
+      std::vector<int> faceOffsetBuffer( bufSize );
       std::vector<int> inkle( bufSize * verticesPerFace );
-      count = faceIter->next( bufSize, faceOffsetBuffer.data(), bufSize * verticesPerFace, inkle.data() );
-      inkle.resize( count * verticesPerFace );
-      for ( size_t i = 0; i < inkle.size(); ++i )
-        inkle[i]++;  // convert to 1-based
-      allConnectivity.insert( allConnectivity.end(), inkle.begin(), inkle.end() );
-    }
-    while ( count != 0 );
-  }
-
-  // Pre-read all vertices (needed for IPOBO orientation check)
-  std::vector<double> xValues( verticesCount );
-  std::vector<double> yValues( verticesCount );
-  {
-    size_t bufSize = BUFFER_SIZE;
-    std::unique_ptr<MeshVertexIterator> vertexIter = mesh->readVertices();
-    size_t count = 0;
-    size_t vertexIndex = 0;
-    do
-    {
-      std::vector<double> coordinates( bufSize * 3 );
-      count = vertexIter->next( bufSize, coordinates.data() );
-      for ( size_t i = 0; i < count; ++i )
+      std::unique_ptr<MeshFaceIterator> faceIter = mesh->readFaces();
+      size_t count = 0;
+      do
       {
-        xValues[vertexIndex + i] = coordinates[i * 3];
-        yValues[vertexIndex + i] = coordinates[i * 3 + 1];
+        count = faceIter->next( bufSize, faceOffsetBuffer.data(), bufSize * verticesPerFace, inkle.data() );
+        const size_t n = count * verticesPerFace;
+        for ( size_t i = 0; i < n; ++i )
+          writeInt( file, inkle[i] + 1 );  // convert to 1-based
       }
-      vertexIndex += count;
+      while ( count != 0 );
     }
-    while ( count != 0 );
+    writeInt( file, MDAL::toInt( facesCount * verticesPerFace * 4 ) );
+
+    writeValueArrayRecord( file, cachedIpobo );
+    writeVertices<double>( file, mesh );
   }
+  else
+  {
+    // Compute path: load connectivity + vertices in RAM to derive IPOBO,
+    // then write everything.
+    std::vector<int> allConnectivity;
+    allConnectivity.reserve( facesCount * verticesPerFace );
+    {
+      int bufSize = BUFFER_SIZE;
+      std::vector<int> faceOffsetBuffer( bufSize );
+      std::vector<int> inkle( bufSize * verticesPerFace );
+      std::unique_ptr<MeshFaceIterator> faceIter = mesh->readFaces();
+      size_t count = 0;
+      do
+      {
+        count = faceIter->next( bufSize, faceOffsetBuffer.data(), bufSize * verticesPerFace, inkle.data() );
+        const size_t n = count * verticesPerFace;
+        for ( size_t i = 0; i < n; ++i )
+          allConnectivity.push_back( inkle[i] + 1 );  // 1-based
+      }
+      while ( count != 0 );
+    }
 
-  // Compute IPOBO: 0 for interior nodes, consecutive index for boundary nodes
-  std::vector<int> ipobo = computeIPOBO( allConnectivity, xValues, yValues,
-                                         verticesCount, verticesPerFace, facesCount );
+    std::vector<double> xValues( verticesCount );
+    std::vector<double> yValues( verticesCount );
+    {
+      size_t bufSize = BUFFER_SIZE;
+      std::unique_ptr<MeshVertexIterator> vertexIter = mesh->readVertices();
+      std::vector<double> coordinates( bufSize * 3 );
+      size_t count = 0;
+      size_t vertexIndex = 0;
+      do
+      {
+        count = vertexIter->next( bufSize, coordinates.data() );
+        for ( size_t i = 0; i < count; ++i )
+        {
+          xValues[vertexIndex + i] = coordinates[i * 3];
+          yValues[vertexIndex + i] = coordinates[i * 3 + 1];
+        }
+        vertexIndex += count;
+      }
+      while ( count != 0 );
+    }
 
-  // Write connectivity table
-  writeInt( file, MDAL::toInt( facesCount * verticesPerFace * 4 ) );
-  writeValueArray( file, allConnectivity );
-  writeInt( file, MDAL::toInt( facesCount * verticesPerFace * 4 ) );
+    std::vector<int> ipobo = computeIPOBO( allConnectivity, xValues, yValues,
+                                           verticesCount, verticesPerFace, facesCount );
 
-  // Write IPOBO
-  writeValueArrayRecord( file, ipobo );
+    writeInt( file, MDAL::toInt( facesCount * verticesPerFace * 4 ) );
+    writeValueArray( file, allConnectivity );
+    writeInt( file, MDAL::toInt( facesCount * verticesPerFace * 4 ) );
 
-  // Write vertices (X then Y)
-  writeValueArrayRecord( file, xValues );
-  writeValueArrayRecord( file, yValues );
+    writeValueArrayRecord( file, ipobo );
+
+    writeValueArrayRecord( file, xValues );
+    writeValueArrayRecord( file, yValues );
+  }
 
   file.close();
 }
