@@ -1111,7 +1111,7 @@ static std::vector<int> computeIPOBO(
         if ( !canClose || contour.size() < 3 )
         {
           MDAL::Log::warning( MDAL_Status::Warn_InvalidElements,
-                              "SELAFIN: could not trace boundary contour, IPOBO set to 0" );
+                              "SELAFIN: could not trace a boundary contour, skipped" );
           ok = false;
         }
         break;
@@ -1120,7 +1120,7 @@ static std::vector<int> computeIPOBO(
     }
 
     if ( !ok )
-      return std::vector<int>( verticesCount, 0 );
+      continue;  // Skip this contour, keep what we have for previous ones
 
     // --- Step 4: determine orientation with the shoelace formula ---
     // area > 0 → CCW (standard math orientation)
