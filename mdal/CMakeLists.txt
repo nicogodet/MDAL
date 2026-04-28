@@ -18,6 +18,7 @@ SET(MDAL_SOURCES
   frmts/mdal_selafin.cpp
   frmts/mdal_esri_tin.cpp
   frmts/mdal_mike21.cpp
+  frmts/mdal_t3s.cpp
 )
 
 SET(MDAL_HEADERS
@@ -37,6 +38,7 @@ SET(MDAL_HEADERS
   frmts/mdal_selafin.hpp
   frmts/mdal_esri_tin.hpp
   frmts/mdal_mike21.hpp
+  frmts/mdal_t3s.hpp
 )
 
 IF(BUILD_PLY)

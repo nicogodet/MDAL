@@ -7,6 +7,7 @@
 #include "mdal_driver_manager.hpp"
 #include "frmts/mdal_2dm.hpp"
 #include "frmts/mdal_xms_tin.hpp"
+#include "frmts/mdal_t3s.hpp"
 #include "frmts/mdal_ascii_dat.hpp"
 #include "frmts/mdal_binary_dat.hpp"
 #include "frmts/mdal_selafin.hpp"
@@ -221,6 +222,7 @@ MDAL::DriverManager::DriverManager()
   // MESH DRIVERS
   mDrivers.push_back( std::make_shared<MDAL::Driver2dm>() );
   mDrivers.push_back( std::make_shared<MDAL::DriverXmsTin>() );
+  mDrivers.push_back( std::make_shared<MDAL::DriverT3S>() );
   mDrivers.push_back( std::make_shared<MDAL::DriverSelafin>() );
   mDrivers.push_back( std::make_shared<MDAL::DriverEsriTin>() );
 
