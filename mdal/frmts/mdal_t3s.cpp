@@ -67,6 +67,8 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverT3S::load( const std::string &meshFile, 
   size_t nodeCount = 0;
   size_t elemCount = 0;
   bool headerDone = false;
+  std::string projection;
+  std::string ellipsoid;
   std::string line;
 
   // Parse header
@@ -102,6 +104,18 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverT3S::load( const std::string &meshFile, 
       }
       elemCount = MDAL::toSizeT( chunks[1] );
     }
+    else if ( MDAL::startsWith( line, ":Projection", MDAL::ContainsBehaviour::CaseInsensitive ) )
+    {
+      std::vector<std::string> chunks = MDAL::split( line, ' ' );
+      if ( chunks.size() >= 2 )
+        projection = chunks[1];
+    }
+    else if ( MDAL::startsWith( line, ":Ellipsoid", MDAL::ContainsBehaviour::CaseInsensitive ) )
+    {
+      std::vector<std::string> chunks = MDAL::split( line, ' ' );
+      if ( chunks.size() >= 2 )
+        ellipsoid = chunks[1];
+    }
   }
 
   if ( !headerDone )
@@ -116,7 +130,7 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverT3S::load( const std::string &meshFile, 
     return nullptr;
   }
 
-  // Read vertices
+  // Read vertices (Z is optional: some t3s files only contain X and Y)
   Vertices vertices( nodeCount );
   for ( size_t i = 0; i < nodeCount; ++i )
   {
@@ -127,14 +141,14 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverT3S::load( const std::string &meshFile, 
     }
     MDAL::trim( line );
     std::vector<std::string> chunks = MDAL::split( line, ' ' );
-    if ( chunks.size() < 3 )
+    if ( chunks.size() < 2 )
     {
       MDAL::Log::error( MDAL_Status::Err_IncompatibleMesh, name(), "Invalid vertex line in " + meshFile );
       return nullptr;
     }
     vertices[i].x = MDAL::toDouble( chunks[0] );
     vertices[i].y = MDAL::toDouble( chunks[1] );
-    vertices[i].z = MDAL::toDouble( chunks[2] );
+    vertices[i].z = ( chunks.size() >= 3 ) ? MDAL::toDouble( chunks[2] ) : 0.0;
   }
 
   // Read triangular faces (1-based indices → 0-based)
@@ -176,6 +190,15 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverT3S::load( const std::string &meshFile, 
   mesh->setVertices( std::move( vertices ) );
   mesh->setFaces( std::move( faces ) );
 
+  // Set CRS from header projection info
+  if ( !projection.empty() )
+  {
+    std::string crs = projection;
+    if ( !ellipsoid.empty() )
+      crs += " " + ellipsoid;
+    mesh->setSourceCrs( crs );
+  }
+
   MDAL::addBedElevationDatasetGroup( mesh.get(), mesh->vertices() );
 
   return std::unique_ptr<Mesh>( mesh.release() );
@@ -209,6 +232,19 @@ void MDAL::DriverT3S::save( const std::string &fileName, const std::string &, MD
   file << ":WrittenBy                MDAL\n";
   file << ":CreationDate             " << timeBuf << "\n";
   file << "#\n";
+
+  // Write CRS if available
+  const std::string crs = mesh->crs();
+  if ( !crs.empty() )
+  {
+    // Try to split "PROJECTION ELLIPSOID" form written by this driver
+    std::vector<std::string> crsParts = MDAL::split( crs, ' ' );
+    file << ":Projection               " << crsParts[0] << "\n";
+    if ( crsParts.size() >= 2 )
+      file << ":Ellipsoid                " << crsParts[1] << "\n";
+    file << "#\n";
+  }
+
   file << "#------------------------------------------------------------------------\n";
   file << "#\n";
   file << ":NodeCount " << nNodes << "\n";

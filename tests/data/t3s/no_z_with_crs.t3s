@@ -1,0 +1,22 @@
+:FileType t3s  ASCII  EnSim 1.0
+# Canadian Hydraulics Centre/National Research Council (c) 1998-2012
+# DataType                 2D T3 Scalar Mesh
+#
+:Application              BlueKenue
+:Version                  3.3.4
+:Projection               LATLONG
+:Ellipsoid                WGS84
+:WrittenBy                MDAL
+:CreationDate             2024-01-01 00:00:00
+#
+:NodeCount 4
+:ElementCount 2
+:ElementType  T3
+#
+:EndHeader
+0.0 0.0
+1.0 0.0
+1.0 1.0
+0.0 1.0
+1 2 3
+1 3 4

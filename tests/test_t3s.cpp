@@ -68,6 +68,26 @@ TEST( MeshT3STest, LoadSimpleMesh )
   MDAL_CloseMesh( m );
 }
 
+TEST( MeshT3STest, NoZWithCrs )
+{
+  std::string path = test_file( "/t3s/no_z_with_crs.t3s" );
+  MDAL_MeshH m = MDAL_LoadMesh( path.c_str() );
+  ASSERT_NE( m, nullptr );
+  ASSERT_EQ( MDAL_Status::None, MDAL_LastStatus() );
+
+  // Z defaults to 0 when absent
+  ASSERT_EQ( MDAL_M_vertexCount( m ), 4 );
+  EXPECT_DOUBLE_EQ( getVertexXCoordinatesAt( m, 0 ), 0.0 );
+  EXPECT_DOUBLE_EQ( getVertexYCoordinatesAt( m, 0 ), 0.0 );
+  EXPECT_DOUBLE_EQ( getVertexZCoordinatesAt( m, 0 ), 0.0 );
+
+  // CRS must be read from :Projection / :Ellipsoid
+  const char *crs = MDAL_M_projection( m );
+  EXPECT_EQ( std::string( crs ), "LATLONG WGS84" );
+
+  MDAL_CloseMesh( m );
+}
+
 TEST( MeshT3STest, SaveAndReload )
 {
   std::string srcPath = test_file( "/t3s/simple_mesh.t3s" );
