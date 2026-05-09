@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <limits>
 #include <assert.h>
+#include <cmath>
 #include <memory>
 
 #include "mdal.h"
@@ -188,6 +189,11 @@ int MDAL_DR_faceVerticesMaximumCount( MDAL_DriverH driver )
 
 MDAL_MeshH MDAL_LoadMesh( const char *uri )
 {
+  return MDAL_LoadMeshWithFlags( uri, 0 );
+}
+
+MDAL_MeshH MDAL_LoadMeshWithFlags( const char *uri, int flags )
+{
   if ( !uri )
   {
     MDAL::Log::error( MDAL_Status::Err_FileNotFound, "Mesh file is not valid (null)" );
@@ -200,10 +206,10 @@ MDAL_MeshH MDAL_LoadMesh( const char *uri )
 
   if ( !driverName.empty() )
   {
-    return static_cast< MDAL_MeshH >( MDAL::DriverManager::instance().load( driverName, meshFile, meshName ).release() );
+    return static_cast< MDAL_MeshH >( MDAL::DriverManager::instance().load( driverName, meshFile, meshName, flags ).release() );
   }
   else
-    return static_cast< MDAL_MeshH >( MDAL::DriverManager::instance().load( meshFile, meshName ).release() );
+    return static_cast< MDAL_MeshH >( MDAL::DriverManager::instance().load( meshFile, meshName, flags ).release() );
 }
 
 const char *MDAL_MeshNames( const char *uri )
@@ -939,6 +945,36 @@ void MDAL_G_minimumMaximum( MDAL_DatasetGroupH group, double *min, double *max )
 
   MDAL::DatasetGroup *g = static_cast< MDAL::DatasetGroup * >( group );
   MDAL::Statistics stats = g->statistics();
+  if ( !stats.isComputed )
+  {
+    stats = MDAL::calculateStatistics( g );
+    g->setStatistics( stats );
+  }
+  *min = stats.minimum;
+  *max = stats.maximum;
+}
+
+void MDAL_G_minimumMaximumApprox( MDAL_DatasetGroupH group, int sampleCount, double *min, double *max )
+{
+  if ( !min || !max )
+  {
+    MDAL::Log::error( MDAL_Status::Err_InvalidData, "Passed pointers min or max are not valid (null)" );
+    return;
+  }
+
+  if ( !group )
+  {
+    MDAL::Log::error( MDAL_Status::Err_IncompatibleDataset, "Dataset is not valid (null)" );
+    *min = NODATA;
+    *max = NODATA;
+    return;
+  }
+
+  if ( sampleCount < 0 )
+    sampleCount = 0;
+
+  MDAL::DatasetGroup *g = static_cast< MDAL::DatasetGroup * >( group );
+  MDAL::Statistics stats = MDAL::calculateStatisticsApprox( g, static_cast<size_t>( sampleCount ) );
   *min = stats.minimum;
   *max = stats.maximum;
 }
@@ -1406,6 +1442,11 @@ void MDAL_D_minimumMaximum( MDAL_DatasetH dataset, double *min, double *max )
 
   MDAL::Dataset *ds = static_cast< MDAL::Dataset * >( dataset );
   MDAL::Statistics stats = ds->statistics();
+  if ( !stats.isComputed )
+  {
+    stats = MDAL::calculateStatistics( ds );
+    ds->setStatistics( stats );
+  }
   *min = stats.minimum;
   *max = stats.maximum;
 }

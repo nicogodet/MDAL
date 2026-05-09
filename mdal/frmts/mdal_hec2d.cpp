@@ -349,10 +349,10 @@ void MDAL::DriverHec2D::readFaceOutput( const HdfFile &hdfFile,
 
   for ( auto &dataset : datasets )
   {
-    dataset->setStatistics( MDAL::calculateStatistics( dataset ) );
+    MDAL::setStatisticsIfRequired( dataset, loadFlags() );
     group->datasets.push_back( dataset );
   }
-  group->setStatistics( MDAL::calculateStatistics( group ) );
+  MDAL::setStatisticsIfRequired( group, loadFlags() );
   mMesh->datasetGroups.emplace_back( std::move( group ) );
 }
 
@@ -466,10 +466,10 @@ std::shared_ptr<MDAL::MemoryDataset2D> MDAL::DriverHec2D::readElemOutput( const 
 
   for ( auto &dataset : datasets )
   {
-    dataset->setStatistics( MDAL::calculateStatistics( dataset ) );
+    MDAL::setStatisticsIfRequired( dataset, loadFlags() );
     group->datasets.push_back( dataset );
   }
-  group->setStatistics( MDAL::calculateStatistics( group ) );
+  MDAL::setStatisticsIfRequired( group, loadFlags() );
   mMesh->datasetGroups.emplace_back( std::move( group ) );
 
   return datasets[0];

@@ -10,6 +10,7 @@
 #include <vector>
 #include <memory>
 #include <map>
+#include <mutex>
 #include <string>
 #include <limits>
 #include "mdal.h"
@@ -35,6 +36,7 @@ namespace MDAL
   {
     double minimum = std::numeric_limits<double>::quiet_NaN();
     double maximum = std::numeric_limits<double>::quiet_NaN();
+    bool isComputed = false;
   } Statistics;
 
   typedef std::vector< std::pair< std::string, std::string > > Metadata;
@@ -91,6 +93,7 @@ namespace MDAL
       bool mSupportsActiveFlag = false;
       DatasetGroup *mParent = nullptr;
       Statistics mStatistics;
+      mutable std::mutex mStatisticsMutex;
   };
 
   class Dataset2D: public Dataset
@@ -200,6 +203,7 @@ namespace MDAL
       MDAL_DataLocation mDataLocation = MDAL_DataLocation::DataOnVertices;
       std::string mUri; // file/uri from where it came
       Statistics mStatistics;
+      mutable std::mutex mStatisticsMutex;
       DateTime mReferenceTime;
   };
 
