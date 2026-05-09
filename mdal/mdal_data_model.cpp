@@ -39,12 +39,15 @@ size_t MDAL::Dataset::activeData( size_t, size_t, int * )
 
 MDAL::Statistics MDAL::Dataset::statistics() const
 {
+  std::lock_guard<std::mutex> lock( mStatisticsMutex );
   return mStatistics;
 }
 
 void MDAL::Dataset::setStatistics( const MDAL::Statistics &statistics )
 {
+  std::lock_guard<std::mutex> lock( mStatisticsMutex );
   mStatistics = statistics;
+  mStatistics.isComputed = true;
 }
 
 MDAL::DatasetGroup *MDAL::Dataset::group() const
@@ -220,12 +223,15 @@ void MDAL::DatasetGroup::replaceUri( std::string uri )
 
 MDAL::Statistics MDAL::DatasetGroup::statistics() const
 {
+  std::lock_guard<std::mutex> lock( mStatisticsMutex );
   return mStatistics;
 }
 
 void MDAL::DatasetGroup::setStatistics( const Statistics &statistics )
 {
+  std::lock_guard<std::mutex> lock( mStatisticsMutex );
   mStatistics = statistics;
+  mStatistics.isComputed = true;
 }
 
 MDAL::DateTime MDAL::DatasetGroup::referenceTime() const

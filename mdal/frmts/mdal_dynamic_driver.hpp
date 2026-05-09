@@ -197,7 +197,7 @@ namespace MDAL
       //! Set the projection from the source
       void setProjection();
 
-      bool populateDatasetGroups();
+      bool populateDatasetGroups( int loadFlags );
 
       //! Returns whether all the symbols have been loaded
       bool loadSymbol();

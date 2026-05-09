@@ -638,6 +638,7 @@ MDAL::Statistics _calculateStatistics( const std::vector<double> &values, size_t
 
   ret.minimum = min;
   ret.maximum = max;
+  ret.isComputed = true;
   return ret;
 }
 
@@ -655,12 +656,76 @@ MDAL::Statistics MDAL::calculateStatistics( DatasetGroup *grp )
   for ( std::shared_ptr<Dataset> &ds : grp->datasets )
   {
     MDAL::Statistics dsStats = ds->statistics();
+    if ( !dsStats.isComputed )
+    {
+      dsStats = calculateStatistics( ds );
+      ds->setStatistics( dsStats );
+    }
     combineStatistics( ret, dsStats );
+  }
+  ret.isComputed = true;
+  return ret;
+}
+
+MDAL::Statistics MDAL::calculateStatisticsApprox( DatasetGroup *grp, size_t sampleCount )
+{
+  Statistics ret;
+  if ( !grp )
+    return ret;
+
+  const size_t n = grp->datasets.size();
+  if ( sampleCount == 0 || sampleCount >= n )
+    return calculateStatistics( grp );
+
+  size_t lastIdx = std::numeric_limits<size_t>::max();
+  for ( size_t i = 0; i < sampleCount; ++i )
+  {
+    const size_t idx = ( sampleCount == 1 ) ? 0 : ( i * ( n - 1 ) ) / ( sampleCount - 1 );
+    if ( idx == lastIdx )
+      continue;
+
+    std::shared_ptr<Dataset> ds = grp->datasets[idx];
+    MDAL::Statistics dsStats = ds->statistics();
+    if ( !dsStats.isComputed )
+    {
+      dsStats = calculateStatistics( ds );
+      ds->setStatistics( dsStats );
+    }
+    combineStatistics( ret, dsStats );
+    lastIdx = idx;
   }
   return ret;
 }
 
+void MDAL::setStatisticsIfRequired( const std::shared_ptr<Dataset> &dataset, int loadFlags )
+{
+  if ( !dataset )
+    return;
+  if ( loadFlags & MDAL_LF_SkipStatistics )
+    return;
+  dataset->setStatistics( MDAL::calculateStatistics( dataset ) );
+}
+
+void MDAL::setStatisticsIfRequired( const std::shared_ptr<DatasetGroup> &group, int loadFlags )
+{
+  setStatisticsIfRequired( group.get(), loadFlags );
+}
+
+void MDAL::setStatisticsIfRequired( DatasetGroup *group, int loadFlags )
+{
+  if ( !group )
+    return;
+  if ( loadFlags & MDAL_LF_SkipStatistics )
+    return;
+  group->setStatistics( MDAL::calculateStatistics( group ) );
+}
+
 MDAL::Statistics MDAL::calculateStatistics( std::shared_ptr<Dataset> dataset )
+{
+  return calculateStatistics( dataset.get() );
+}
+
+MDAL::Statistics MDAL::calculateStatistics( Dataset *dataset )
 {
   Statistics ret;
   if ( !dataset )
@@ -706,13 +771,14 @@ MDAL::Statistics MDAL::calculateStatistics( std::shared_ptr<Dataset> dataset )
         dataset->activeData( i, bufLen, activeBuffer.data() );
     }
     if ( valsRead == 0 )
-      return ret;
+      break;
 
     MDAL::Statistics dsStats = _calculateStatistics( buffer, valsRead, isVector, activeBuffer );
     combineStatistics( ret, dsStats );
     i += valsRead;
   }
 
+  ret.isComputed = true;
   return ret;
 }
 
