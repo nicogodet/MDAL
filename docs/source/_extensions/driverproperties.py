@@ -70,6 +70,7 @@ class shortname(nodes.Admonition, nodes.Element):
 def visit_shortname_node(self, node):
     self.body.append(self.starttag(
             node, 'div', CLASS=('admonition shortname')))
+    self.context.append('</div>\n')
 
 class built_in_by_default(nodes.Admonition, nodes.Element):
     pass
@@ -77,6 +78,7 @@ class built_in_by_default(nodes.Admonition, nodes.Element):
 def visit_built_in_by_default_node(self, node):
     self.body.append(self.starttag(
             node, 'div', CLASS=('admonition built_in_by_default')))
+    self.context.append('</div>\n')
 
 class build_dependencies(nodes.Admonition, nodes.Element):
     pass
@@ -84,6 +86,7 @@ class build_dependencies(nodes.Admonition, nodes.Element):
 def visit_build_dependencies_node(self, node):
     self.body.append(self.starttag(
             node, 'div', CLASS=('admonition build_dependencies')))
+    self.context.append('</div>\n')
 
 class supports_create(nodes.Admonition, nodes.Element):
     pass
@@ -91,6 +94,7 @@ class supports_create(nodes.Admonition, nodes.Element):
 def visit_supports_create_node(self, node):
     self.body.append(self.starttag(
             node, 'div', CLASS=('admonition supports_create')))
+    self.context.append('</div>\n')
 
 class supports_createcopy(nodes.Admonition, nodes.Element):
     pass
@@ -98,6 +102,7 @@ class supports_createcopy(nodes.Admonition, nodes.Element):
 def visit_supports_createcopy_node(self, node):
     self.body.append(self.starttag(
             node, 'div', CLASS=('admonition supports_createcopy')))
+    self.context.append('</div>\n')
 
 class supports_virtualio(nodes.Admonition, nodes.Element):
     pass
@@ -105,6 +110,7 @@ class supports_virtualio(nodes.Admonition, nodes.Element):
 def visit_supports_georeferencing_node(self, node):
     self.body.append(self.starttag(
             node, 'div', CLASS=('admonition supports_georeferencing')))
+    self.context.append('</div>\n')
 
 class supports_georeferencing(nodes.Admonition, nodes.Element):
     pass
@@ -112,6 +118,7 @@ class supports_georeferencing(nodes.Admonition, nodes.Element):
 def visit_supports_virtualio_node(self, node):
     self.body.append(self.starttag(
             node, 'div', CLASS=('admonition supports_virtualio')))
+    self.context.append('</div>\n')
 
 
 from docutils.parsers.rst import Directive
