@@ -126,7 +126,7 @@ latex_elements = {
 
 # Additional stuff for the LaTeX preamble.
 'preamble': preamble,
-'inputenc':'\\usepackage[utf8]{inputenc}\n\\usepackage{CJKutf8}\n\\usepackage{substitutefont}',
+'inputenc':'\\usepackage[utf8]{inputenc}\n\\usepackage{CJKutf8}',
 'babel':'\\usepackage[russian,main=english]{babel}\n\\selectlanguage{english}',
 'fontenc':'\\usepackage[LGR,X2,T1]{fontenc}'
 
