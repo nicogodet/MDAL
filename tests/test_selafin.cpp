@@ -6,6 +6,7 @@
 #include "gtest/gtest.h"
 #include <string>
 #include <vector>
+#include <algorithm>
 
 //mdal
 #include "mdal.h"
@@ -274,6 +275,250 @@ TEST( MeshSLFTest, SaveMeshFrame )
     test_file( "/slf/example_res_fr.slf" ),
     tmp_file( "/emptymesh.slf" ),
     "SELAFIN" );
+}
+
+// Build a triangulated MemoryMesh (2DM) from interleaved x,y,z coordinates and
+// 0-based triangle connectivity, save it as SELAFIN (which takes the compute
+// path and exercises computeIPOBO), and return the IPOBO array read back.
+static std::vector<int> saveTriMeshAndReadIpobo(
+  std::vector<double> coords,        // x,y,z interleaved
+  std::vector<int> faceIndices,      // 3 per triangle, 0-based
+  const std::string &tmpName )
+{
+  MDAL_DriverH driver = MDAL_driverFromName( "2DM" );
+  MDAL_MeshH mesh = MDAL_CreateMesh( driver );
+  const int nVerts = static_cast<int>( coords.size() / 3 );
+  const int nFaces = static_cast<int>( faceIndices.size() / 3 );
+  MDAL_M_addVertices( mesh, nVerts, coords.data() );
+  std::vector<int> faceSizes( static_cast<size_t>( nFaces ), 3 );
+  MDAL_M_addFaces( mesh, nFaces, faceSizes.data(), faceIndices.data() );
+  std::string savedFile = tmp_file( tmpName );
+  MDAL_SaveMesh( mesh, savedFile.c_str(), "SELAFIN" );
+  MDAL_CloseMesh( mesh );
+  return MDAL::SelafinFile::readIPOBO( savedFile );
+}
+
+TEST( MeshSLFTest, IPOBOComputation )
+{
+  // Build a 3x3 triangulated grid in memory and save it as SELAFIN. The mesh
+  // is a MemoryMesh, so save() takes the compute path and exercises
+  // computeIPOBO. The expected vector is a byte-for-byte cross-check against
+  // python-serafin SerafinHeader.build_ipobo() on the same triangulation.
+  //
+  //   6 -- 7 -- 8
+  //   |  / |  / |
+  //   3 -- 4 -- 5
+  //   |  / |  / |
+  //   0 -- 1 -- 2
+  std::vector<double> coords
+  {
+    0, 0, 0,   1, 0, 0,   2, 0, 0,
+    0, 1, 0,   1, 1, 0,   2, 1, 0,
+    0, 2, 0,   1, 2, 0,   2, 2, 0,
+  };
+  std::vector<int> faceIndices
+  {
+    0, 1, 4,   0, 4, 3,
+    1, 2, 5,   1, 5, 4,
+    3, 4, 7,   3, 7, 6,
+    4, 5, 8,   4, 8, 7,
+  };
+
+  std::vector<int> ipobo = saveTriMeshAndReadIpobo( coords, faceIndices, "/ipobo_grid.slf" );
+  // build_ipobo() reference: SW corner (vertex 0) starts at 1, perimeter CCW,
+  // centre vertex 4 interior.
+  const std::vector<int> expected{ 1, 2, 3, 8, 0, 4, 7, 6, 5 };
+  EXPECT_EQ( ipobo, expected ) << "IPOBO does not match python-serafin build_ipobo";
+}
+
+TEST( MeshSLFTest, IPOBOIsland )
+{
+  // 4x4 grid (row-major, x fastest) with the central cell removed, forming an
+  // annulus: a 12-node outer boundary (CCW) enclosing a 4-node island (CW).
+  // Cross-checked element-wise against python-serafin build_ipobo(): the outer
+  // ring is numbered 1..12 first, then the island 13..16.
+  std::vector<double> coords;
+  for ( int yy = 0; yy < 4; ++yy )
+    for ( int xx = 0; xx < 4; ++xx )
+    {
+      coords.push_back( xx );
+      coords.push_back( yy );
+      coords.push_back( 0 );
+    }
+  std::vector<int> faceIndices
+  {
+    0, 1, 5,    0, 5, 4,
+    1, 2, 6,    1, 6, 5,
+    2, 3, 7,    2, 7, 6,
+    4, 5, 9,    4, 9, 8,
+    6, 7, 11,   6, 11, 10,
+    8, 9, 13,   8, 13, 12,
+    9, 10, 14,  9, 14, 13,
+    10, 11, 15, 10, 15, 14,
+  };
+
+  std::vector<int> ipobo = saveTriMeshAndReadIpobo( coords, faceIndices, "/ipobo_island.slf" );
+  const std::vector<int> expected{ 1, 2, 3, 4, 12, 13, 16, 5, 11, 14, 15, 6, 10, 9, 8, 7 };
+  EXPECT_EQ( ipobo, expected ) << "Island IPOBO does not match python-serafin build_ipobo";
+}
+
+TEST( MeshSLFTest, IPOBOMultiDomain )
+{
+  // Two disjoint unit squares far apart. The domain whose south-west node has
+  // the smaller (x+y) is numbered first; both external rings are CCW.
+  // Cross-checked element-wise against python-serafin build_ipobo().
+  std::vector<double> coords
+  {
+    0,  0,  0,    1,  0,  0,    1,  1,  0,    0,  1,  0,
+    10, 10, 0,    11, 10, 0,    11, 11, 0,    10, 11, 0,
+  };
+  std::vector<int> faceIndices
+  {
+    0, 1, 2,   0, 2, 3,
+    4, 5, 6,   4, 6, 7,
+  };
+
+  std::vector<int> ipobo = saveTriMeshAndReadIpobo( coords, faceIndices, "/ipobo_multidomain.slf" );
+  const std::vector<int> expected{ 1, 2, 3, 4, 5, 6, 7, 8 };
+  EXPECT_EQ( ipobo, expected ) << "Multi-domain IPOBO does not match python-serafin build_ipobo";
+}
+
+TEST( MeshSLFTest, IPOBODegenerateBowtie )
+{
+  // Two triangles meeting at a single shared vertex (node 0) form a non-manifold
+  // boundary: node 0 has 4 boundary neighbours (degree != 2). computeIPOBO must
+  // fall back to an all-zero IPOBO rather than emit a plausible-but-wrong one.
+  std::vector<double> coords
+  {
+    0,  0, 0,    1, 0, 0,    0,  1, 0,
+    -1, 0, 0,    0, -1, 0,
+  };
+  std::vector<int> faceIndices
+  {
+    0, 1, 2,
+    0, 3, 4,
+  };
+
+  std::vector<int> ipobo = saveTriMeshAndReadIpobo( coords, faceIndices, "/ipobo_bowtie.slf" );
+  ASSERT_EQ( ipobo.size(), 5u );
+  for ( int v : ipobo )
+    EXPECT_EQ( v, 0 ) << "Non-manifold mesh must yield an all-zero IPOBO";
+}
+
+TEST( MeshSLFTest, IPOBONonTriangular )
+{
+  // SELAFIN is triangles-only: a quad mesh must be rejected up front by
+  // MDAL_SaveMesh (Err_IncompatibleMesh) rather than silently producing a file.
+  // (computeIPOBO keeps an internal verticesPerFace != 3 guard as defence in
+  // depth, but the public save path never reaches it.)
+  MDAL_DriverH driver = MDAL_driverFromName( "2DM" );
+  MDAL_MeshH mesh = MDAL_CreateMesh( driver );
+  std::vector<double> coords{ 0, 0, 0,   1, 0, 0,   1, 1, 0,   0, 1, 0 };
+  MDAL_M_addVertices( mesh, 4, coords.data() );
+  std::vector<int> faceSizes{ 4 };
+  std::vector<int> faceIndices{ 0, 1, 2, 3 };
+  MDAL_M_addFaces( mesh, 1, faceSizes.data(), faceIndices.data() );
+  std::string savedFile = tmp_file( "/ipobo_quad.slf" );
+  MDAL_SaveMesh( mesh, savedFile.c_str(), "SELAFIN" );
+  EXPECT_EQ( MDAL_Status::Err_IncompatibleMesh, MDAL_LastStatus() )
+      << "A non-triangular mesh must be rejected by the SELAFIN driver";
+  MDAL_CloseMesh( mesh );
+}
+
+TEST( MeshSLFTest, IPOBOLargeMeshBoundarySet )
+{
+  // Rebuild a real TELEMAC mesh (Malpasset, 13541 nodes) as a MemoryMesh so
+  // save() takes the compute path, then verify computeIPOBO marks EXACTLY the
+  // same boundary node set as the file shipped by TELEMAC, numbered
+  // consecutively 1..N. (The numbering order may differ from the stored one,
+  // which uses a boundary-first node renumbering, but the boundary SET and
+  // consecutiveness must match.)
+  std::string sourceFile = test_file( "/slf/example.slf" );
+  std::vector<int> storedIpobo = MDAL::SelafinFile::readIPOBO( sourceFile );
+  ASSERT_FALSE( storedIpobo.empty() );
+
+  MDAL_MeshH src = MDAL_LoadMesh( sourceFile.c_str() );
+  ASSERT_NE( src, nullptr );
+  const int nVerts = MDAL_M_vertexCount( src );
+  const int nFaces = MDAL_M_faceCount( src );
+  std::vector<double> coords = getCoordinates( src, nVerts );
+  std::vector<int> faceIndices = faceVertexIndices( src, nFaces );  // 3 per face
+  MDAL_CloseMesh( src );
+
+  std::vector<int> ipobo = saveTriMeshAndReadIpobo( coords, faceIndices, "/ipobo_large.slf" );
+  ASSERT_EQ( ipobo.size(), storedIpobo.size() );
+
+  // Same boundary node set.
+  int nBoundary = 0;
+  for ( size_t i = 0; i < ipobo.size(); ++i )
+  {
+    EXPECT_EQ( ipobo[i] > 0, storedIpobo[i] > 0 )
+        << "Boundary classification differs at node " << i;
+    if ( ipobo[i] > 0 )
+      ++nBoundary;
+  }
+  EXPECT_GT( nBoundary, 0 );
+
+  // Consecutive 1..nBoundary, no gaps or duplicates.
+  std::vector<int> vals;
+  for ( int v : ipobo )
+    if ( v > 0 ) vals.push_back( v );
+  std::sort( vals.begin(), vals.end() );
+  for ( size_t i = 0; i < vals.size(); ++i )
+    EXPECT_EQ( vals[i], static_cast<int>( i + 1 ) ) << "IPOBO numbering is not consecutive";
+}
+
+TEST( MeshSLFTest, IPOBOMatchesTelemacReference )
+{
+  // Real TELEMAC meshes whose stored IPOBO already follows the geometric
+  // (south-west walk) convention, so computeIPOBO must reproduce it exactly.
+  // geo_siphon has an island (2 contours) and geo_weirs has several contours,
+  // exercising the nesting / orientation / DFS-ordering logic on real data.
+  // These fixtures were verified to satisfy stored == python-serafin
+  // build_ipobo(), so matching the stored array also matches build_ipobo().
+  const std::vector<std::string> meshes{ "/slf/geo_siphon.slf", "/slf/geo_weirs.slf" };
+
+  for ( const std::string &name : meshes )
+  {
+    const std::string sourceFile = test_file( name );
+    std::vector<int> stored = MDAL::SelafinFile::readIPOBO( sourceFile );
+    ASSERT_FALSE( stored.empty() ) << name;
+
+    // Rebuild as a MemoryMesh so save() takes the compute path (not the cache).
+    MDAL_MeshH src = MDAL_LoadMesh( sourceFile.c_str() );
+    ASSERT_NE( src, nullptr ) << name;
+    const int nVerts = MDAL_M_vertexCount( src );
+    const int nFaces = MDAL_M_faceCount( src );
+    std::vector<double> coords = getCoordinates( src, nVerts );
+    std::vector<int> faceIndices = faceVertexIndices( src, nFaces );
+    MDAL_CloseMesh( src );
+
+    std::vector<int> got = saveTriMeshAndReadIpobo( coords, faceIndices, "/ipobo_ref.slf" );
+    ASSERT_EQ( got.size(), stored.size() ) << name;
+    EXPECT_EQ( got, stored ) << "computeIPOBO does not reproduce the stored IPOBO for " << name;
+  }
+}
+
+TEST( MeshSLFTest, IPOBORoundTrip )
+{
+  // Round-tripping a MeshSelafin reuses the cached IPOBO from disk
+  // (no recompute). The saved file must therefore have exactly the
+  // same IPOBO array as the source — including any non-consecutive
+  // numbering produced by other tools.
+  std::string sourceFile = test_file( "/slf/example.slf" );
+  std::string savedFile = tmp_file( "/ipobo_roundtrip.slf" );
+
+  std::vector<int> sourceIpobo = MDAL::SelafinFile::readIPOBO( sourceFile );
+  ASSERT_FALSE( sourceIpobo.empty() );
+
+  MDAL_MeshH mesh = MDAL_LoadMesh( sourceFile.c_str() );
+  ASSERT_NE( mesh, nullptr );
+  MDAL_SaveMesh( mesh, savedFile.c_str(), "SELAFIN" );
+  ASSERT_EQ( MDAL_Status::None, MDAL_LastStatus() );
+  MDAL_CloseMesh( mesh );
+
+  std::vector<int> savedIpobo = MDAL::SelafinFile::readIPOBO( savedFile );
+  EXPECT_EQ( sourceIpobo, savedIpobo ) << "Round-trip did not preserve IPOBO";
 }
 
 static MDAL_DatasetGroupH addNewScalarDatasetGroup( MDAL_MeshH mesh, MDAL_DriverH driver, std::string file )
