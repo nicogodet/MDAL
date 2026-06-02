@@ -6,6 +6,8 @@ DFSU -- DHI flexible file format
 
 .. shortname:: dfsu
 
+.. build_dependencies:: External driver (Windows)
+
 MDAL supports reading of DFSU format. DFSU is DHI Flexible File Format defined by DHI_.
 This is external driver that is not shipped directly with MDAL installations.
 To build the driver, follow instruction in README DFSU_README_

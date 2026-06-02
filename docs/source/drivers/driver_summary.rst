@@ -33,16 +33,16 @@
      - No
      - No
      - Built-in by default
+   * - :ref:`dfs2 <driver.dfs2>`
+     - DHI Grid Series File
+     - No
+     - No
+     - External driver (Windows)
    * - :ref:`dfsu <driver.dfsu>`
      - DHI flexible file format
      - No
      - No
-     - External driver (win)
-   * - :ref:`dfs2 <driver.dfs2>`
-     - DHI grid series file
-     - No
-     - No
-     - External driver (win)
+     - External driver (Windows)
    * - :ref:`Esri TIN <driver.esri-tin>`
      - Elevation model as TIN
      - No
@@ -58,8 +58,18 @@
      - No
      - No
      - Built-in by default
+   * - :ref:`H2I <driver.h2i>`
+     - H2i format
+     - No
+     - No
+     - Built-in by default
    * - :ref:`HEC-RAS <driver.hecras>`
      - HEC-RAS outputs format
+     - No
+     - No
+     - Built-in by default
+   * - :ref:`Mike21 <driver.mike21>`
+     - Text/plain file
      - No
      - No
      - Built-in by default

@@ -62,7 +62,6 @@ html_theme_options = {
     'canonical_url': 'https://mdal.xyz',
     'analytics_id': '',  #  Provided by Google in your dashboard
     'logo_only': True,
-    'display_version': True,
     'prev_next_buttons_location': 'both',
     'style_external_links': False,
     #'vcs_pageview_mode': '',
@@ -127,7 +126,7 @@ latex_elements = {
 
 # Additional stuff for the LaTeX preamble.
 'preamble': preamble,
-'inputenc':'\\usepackage[utf8]{inputenc}\n\\usepackage{CJKutf8}\n\\usepackage{substitutefont}',
+'inputenc':'\\usepackage[utf8]{inputenc}\n\\usepackage{CJKutf8}',
 'babel':'\\usepackage[russian,main=english]{babel}\n\\selectlanguage{english}',
 'fontenc':'\\usepackage[LGR,X2,T1]{fontenc}'
 
