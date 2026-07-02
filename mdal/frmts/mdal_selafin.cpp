@@ -13,8 +13,8 @@
 #include <string>
 #include <vector>
 #include <map>
-#include <unordered_set>
-#include <limits>
+#include <unordered_map>
+#include <cstdint>
 #include <cassert>
 #include <memory>
 #include <algorithm>
@@ -262,13 +262,6 @@ std::vector<int> MDAL::SelafinFile::readIPOBO( const std::string &fileName )
   reader.initialize();
   reader.parseFile();
   return reader.readIntArr( reader.mIPOBOStreamPosition, 0, reader.mVerticesCount );
-}
-
-std::vector<int> MDAL::SelafinFile::cachedIPOBO()
-{
-  if ( !mParsed )
-    parseFile();
-  return readIntArr( mIPOBOStreamPosition, 0, mVerticesCount );
 }
 
 void MDAL::SelafinFile::populateDataset( MDAL::Mesh *mesh, const std::string &fileName )
@@ -968,48 +961,26 @@ static void writeValueArray( std::ofstream &file, const std::vector<T> &array )
     writeValue( file, value );
 }
 
-template<typename T>
-static void writeVertices( std::ofstream &file, MDAL::Mesh *mesh )
-{
-  std::unique_ptr<MDAL::MeshVertexIterator> vertexIter = mesh->readVertices();
-  size_t verticesCount = mesh->verticesCount();
-  std::vector<T> xValues( verticesCount );
-  std::vector<T> yValues( verticesCount );
-  size_t count = 0;
-  size_t vertexIndex = 0;
-  size_t bufferSize = BUFFER_SIZE;
-  do
-  {
-    std::vector<double> coordinates( bufferSize * 3 );
-    count = vertexIter->next( bufferSize, coordinates.data() );
-    for ( size_t i = 0; i < count; ++i )
-    {
-      xValues[vertexIndex + i] = coordinates[i * 3];
-      yValues[vertexIndex + i] = coordinates[i * 3 + 1];
-    }
-    vertexIndex += count;
-  }
-  while ( count != 0 );
-  writeValueArrayRecord( file, xValues );
-  writeValueArrayRecord( file, yValues );
-}
-
 /**
  * Computes the IPOBO array from the mesh connectivity and vertex coordinates.
  *
  * IPOBO[i] = 0 for interior nodes
  * IPOBO[i] = N (consecutive, starting at 1) for boundary nodes
  *
- * Algorithm:
- *  1. Find boundary edges: edges shared by exactly one face.
- *  2. Build adjacency list of boundary nodes.
- *  3. Trace each boundary contour starting from the node with minimum x+y.
- *  4. Determine orientation (shoelace formula): external boundary → CCW, islands → CW.
+ * Algorithm (same conventions as OpenTELEMAC and python-serafin):
+ *  1. Find boundary edges: edges referenced by exactly one face.
+ *  2. Build an adjacency table of boundary nodes; the walk below consumes
+ *     edges as it goes, so contours sharing a pinch node are both traced.
+ *  3. Walk each closed contour, starting from the unconsumed node with
+ *     minimum x+y (bottom-left), picking the min x+y neighbour on ties.
+ *  4. Orient with the shoelace formula: external boundary CCW, islands CW.
+ *     The start node stays first so numbering begins at the bottom-left node.
  *  5. Number boundary nodes consecutively along each contour.
  *
  * Connectivity indices are 1-based (SELAFIN convention).
  * Returns a 0-indexed vector of size verticesCount.
- * On error (degenerate mesh), returns an all-zero vector.
+ * A contour that cannot be closed (degenerate topology) is skipped with a
+ * warning; its nodes are left as interior (0).
  */
 static std::vector<int> computeIPOBO(
   const std::vector<int> &connectivity,  // 1-based vertex indices
@@ -1020,135 +991,161 @@ static std::vector<int> computeIPOBO(
   size_t facesCount )
 {
   std::vector<int> ipobo( verticesCount, 0 );
+  if ( verticesPerFace < 2 || facesCount == 0 )
+    return ipobo;
 
-  // --- Step 1: count occurrences of each canonical edge ---
-  // Use pair(min,max) as canonical key — no float-hash collision risk.
-  std::map<std::pair<int, int>, int> edgeCounts;
+  // --- Step 1: collect canonical edge keys and sort; boundary edges are the
+  // keys that appear exactly once. Contiguous sort beats a node-based map on
+  // large meshes.
+  std::vector<uint64_t> edgeKeys;
+  edgeKeys.reserve( facesCount * verticesPerFace );
   for ( size_t f = 0; f < facesCount; ++f )
   {
     for ( size_t v = 0; v < verticesPerFace; ++v )
     {
-      int v1 = connectivity[f * verticesPerFace + v];
-      int v2 = connectivity[f * verticesPerFace + ( v + 1 ) % verticesPerFace];
-      edgeCounts[ {std::min( v1, v2 ), std::max( v1, v2 )} ]++;
+      const uint64_t v1 = static_cast<uint64_t>( connectivity[f * verticesPerFace + v] );
+      const uint64_t v2 = static_cast<uint64_t>( connectivity[f * verticesPerFace + ( v + 1 ) % verticesPerFace] );
+      if ( v1 == v2 )
+        continue;  // collapsed face edge
+      edgeKeys.push_back( ( std::min( v1, v2 ) << 32 ) | std::max( v1, v2 ) );
     }
   }
+  std::sort( edgeKeys.begin(), edgeKeys.end() );
 
-  // --- Step 2: build boundary adjacency list (1-based) ---
-  // std::map (not unordered) for deterministic iteration when picking start nodes.
-  std::map<int, std::vector<int>> boundaryAdj;
-  for ( const auto &kv : edgeCounts )
+  // --- Step 2: adjacency of boundary nodes (1-based indices)
+  std::unordered_map<int, std::vector<int>> neighbours;
+  for ( size_t i = 0; i < edgeKeys.size(); )
   {
-    if ( kv.second == 1 )
+    size_t j = i + 1;
+    while ( j < edgeKeys.size() && edgeKeys[j] == edgeKeys[i] )
+      ++j;
+    if ( j - i == 1 )
     {
-      boundaryAdj[kv.first.first].push_back( kv.first.second );
-      boundaryAdj[kv.first.second].push_back( kv.first.first );
+      const int v1 = static_cast<int>( edgeKeys[i] >> 32 );
+      const int v2 = static_cast<int>( edgeKeys[i] & 0xffffffff );
+      neighbours[v1].push_back( v2 );
+      neighbours[v2].push_back( v1 );
     }
+    i = j;
   }
+  edgeKeys.clear();
+  edgeKeys.shrink_to_fit();
 
-  if ( boundaryAdj.empty() )
+  if ( neighbours.empty() )
     return ipobo;  // No boundary (closed surface or empty mesh)
 
-  // Warn once if any boundary node is non-manifold (>2 boundary neighbours).
-  // TODO: implement angle-based traversal for non-manifold boundaries
-  //       (see OpenTELEMAC bord3d.f / PyTelTools for reference).
-  size_t nonManifoldCount = 0;
-  for ( const auto &kv : boundaryAdj )
+  // A node shared by two contours (pinch node) can hold only one IPOBO value:
+  // the numbering cannot fully represent such a boundary.
+  size_t pinchCount = 0;
+  for ( const auto &kv : neighbours )
     if ( kv.second.size() > 2 )
-      ++nonManifoldCount;
-  if ( nonManifoldCount > 0 )
+      ++pinchCount;
+  if ( pinchCount > 0 )
     MDAL::Log::warning( MDAL_Status::Warn_InvalidElements,
-                        "SELAFIN: non-manifold boundary detected (" +
-                        std::to_string( nonManifoldCount ) +
-                        " nodes with >2 boundary neighbours), IPOBO order may be ambiguous" );
+                        "SELAFIN: non-manifold boundary (" +
+                        std::to_string( pinchCount ) +
+                        " nodes shared by several contours), IPOBO cannot fully represent it" );
 
-  // --- Step 3: trace contours and number boundary nodes ---
-  std::unordered_set<int> visited;
-  int boundaryIdx = 1;
-  bool isFirstContour = true;
-
-  while ( true )
+  // Start candidates sorted by x+y once (bottom-left first, deterministic).
+  std::vector<int> startCandidates;
+  startCandidates.reserve( neighbours.size() );
+  for ( const auto &kv : neighbours )
+    startCandidates.push_back( kv.first );
+  std::sort( startCandidates.begin(), startCandidates.end(),
+             [&x, &y]( int a, int b )
   {
-    // Find unvisited boundary node with minimum x+y (deterministic start)
-    int startNode = -1;
-    double minXY = std::numeric_limits<double>::max();
-    for ( const auto &kv : boundaryAdj )
-    {
-      int node = kv.first;
-      if ( visited.count( node ) == 0 )
-      {
-        double xy = x[node - 1] + y[node - 1];
-        if ( xy < minXY )
-        {
-          minXY = xy;
-          startNode = node;
-        }
-      }
-    }
-    if ( startNode == -1 )
-      break;  // All contours traced
+    const double sa = x[a - 1] + y[a - 1];
+    const double sb = x[b - 1] + y[b - 1];
+    if ( sa != sb )
+      return sa < sb;
+    return a < b;
+  } );
 
-    // Trace the contour
-    std::vector<int> contour;
-    int currNode = startNode;
-    bool ok = true;
-    while ( true )
+  // Removes one occurrence of \a to from the adjacency of \a from,
+  // dropping the entry when no edge remains.
+  auto consumeEdge = [&neighbours]( int from, int to )
+  {
+    auto it = neighbours.find( from );
+    if ( it == neighbours.end() )
+      return;
+    std::vector<int> &adj = it->second;
+    for ( size_t k = 0; k < adj.size(); ++k )
     {
-      visited.insert( currNode );
-      contour.push_back( currNode );
-
-      // Find the next unvisited neighbour (or the start node to close the loop)
-      const std::vector<int> &neighbours = boundaryAdj[currNode];
-      int nextNode = -1;
-      // Prefer unvisited neighbours; accept startNode only to close the loop
-      for ( int nb : neighbours )
+      if ( adj[k] == to )
       {
-        if ( visited.count( nb ) == 0 )
-        {
-          // Among unvisited neighbours pick the one with minimum x+y for determinism
-          if ( nextNode == -1 || ( x[nb - 1] + y[nb - 1] ) < ( x[nextNode - 1] + y[nextNode - 1] ) )
-            nextNode = nb;
-        }
-      }
-      if ( nextNode == -1 )
-      {
-        // Check whether we can close back to startNode
-        bool canClose = false;
-        for ( int nb : neighbours )
-          if ( nb == startNode ) { canClose = true; break; }
-        if ( !canClose || contour.size() < 3 )
-        {
-          MDAL::Log::warning( MDAL_Status::Warn_InvalidElements,
-                              "SELAFIN: could not trace a boundary contour, skipped" );
-          ok = false;
-        }
+        adj[k] = adj.back();
+        adj.pop_back();
         break;
       }
-      currNode = nextNode;
+    }
+    if ( adj.empty() )
+      neighbours.erase( it );
+  };
+
+  // --- Step 3: walk each contour, consuming edges
+  int boundaryIdx = 1;
+  bool isFirstContour = true;
+  for ( const int startNode : startCandidates )
+  {
+    if ( neighbours.find( startNode ) == neighbours.end() )
+      continue;  // all its edges were consumed by a previous contour
+
+    std::vector<int> contour;
+    int curr = startNode;
+    bool closed = false;
+    while ( true )
+    {
+      contour.push_back( curr );
+      const auto it = neighbours.find( curr );
+      if ( it == neighbours.end() )
+        break;  // dead end before closing
+
+      // Deterministic pick: neighbour with minimum x+y (only one remains at
+      // manifold nodes; matters at the start node and at pinch nodes).
+      int next = it->second[0];
+      double best = x[next - 1] + y[next - 1];
+      for ( size_t k = 1; k < it->second.size(); ++k )
+      {
+        const int nb = it->second[k];
+        const double s = x[nb - 1] + y[nb - 1];
+        if ( s < best || ( s == best && nb < next ) )
+        {
+          next = nb;
+          best = s;
+        }
+      }
+      consumeEdge( curr, next );
+      consumeEdge( next, curr );
+      if ( next == startNode )
+      {
+        closed = true;
+        break;
+      }
+      curr = next;
     }
 
-    if ( !ok )
-      continue;  // Skip this contour, keep what we have for previous ones
+    if ( !closed || contour.size() < 3 )
+    {
+      MDAL::Log::warning( MDAL_Status::Warn_InvalidElements,
+                          "SELAFIN: could not close a boundary contour, skipped" );
+      continue;
+    }
 
-    // --- Step 4: determine orientation with the shoelace formula ---
-    // area > 0 → CCW (standard math orientation)
+    // --- Step 4: orientation with the shoelace formula (area > 0 means CCW).
+    // External boundary (first contour) must be CCW, islands CW.
     double area = 0.0;
     for ( size_t i = 0; i < contour.size(); ++i )
     {
-      int n1 = contour[i];
-      int n2 = contour[( i + 1 ) % contour.size()];
+      const int n1 = contour[i];
+      const int n2 = contour[( i + 1 ) % contour.size()];
       area += x[n1 - 1] * y[n2 - 1] - x[n2 - 1] * y[n1 - 1];
     }
-    bool isCCW = ( area > 0.0 );
+    const bool isCCW = ( area > 0.0 );
+    if ( isFirstContour != isCCW )
+      std::reverse( contour.begin() + 1, contour.end() );  // keep the start node first
 
-    // External boundary (first) → CCW; islands → CW
-    if ( isFirstContour && !isCCW )
-      std::reverse( contour.begin(), contour.end() );
-    else if ( !isFirstContour && isCCW )
-      std::reverse( contour.begin(), contour.end() );
-
-    // --- Step 5: assign consecutive IPOBO numbers ---
-    for ( int node : contour )
+    // --- Step 5: assign consecutive IPOBO numbers
+    for ( const int node : contour )
       ipobo[node - 1] = boundaryIdx++;
 
     isFirstContour = false;
@@ -1191,93 +1188,57 @@ void MDAL::DriverSelafin::save( const std::string &fileName, const std::string &
   elem[3] = 1;
   writeValueArrayRecord( file, elem );
 
-  // Reuse the IPOBO from disk when saving an unmodified MeshSelafin (round-trip).
-  // QGIS edits force a conversion to MemoryMesh, so a successful dynamic_cast
-  // guarantees the topology matches the source file.
-  std::vector<int> cachedIpobo;
-  if ( auto *meshSlf = dynamic_cast<MeshSelafin *>( mesh ) )
-    cachedIpobo = meshSlf->reader()->cachedIPOBO();
-
-  if ( !cachedIpobo.empty() )
+  // Load connectivity and vertices in RAM to derive IPOBO, then write everything.
+  std::vector<int> allConnectivity;
+  allConnectivity.reserve( facesCount * verticesPerFace );
   {
-    // Stream the connectivity in chunks; no need to keep the whole mesh in RAM.
-    writeInt( file, MDAL::toInt( facesCount * verticesPerFace * 4 ) );
-    if ( facesCount > 0 )
+    int bufSize = BUFFER_SIZE;
+    std::vector<int> faceOffsetBuffer( bufSize );
+    std::vector<int> inkle( bufSize * verticesPerFace );
+    std::unique_ptr<MeshFaceIterator> faceIter = mesh->readFaces();
+    size_t count = 0;
+    do
     {
-      int bufSize = BUFFER_SIZE;
-      std::vector<int> faceOffsetBuffer( bufSize );
-      std::vector<int> inkle( bufSize * verticesPerFace );
-      std::unique_ptr<MeshFaceIterator> faceIter = mesh->readFaces();
-      size_t count = 0;
-      do
-      {
-        count = faceIter->next( bufSize, faceOffsetBuffer.data(), bufSize * verticesPerFace, inkle.data() );
-        const size_t n = count * verticesPerFace;
-        for ( size_t i = 0; i < n; ++i )
-          writeInt( file, inkle[i] + 1 );  // convert to 1-based
-      }
-      while ( count != 0 );
+      count = faceIter->next( bufSize, faceOffsetBuffer.data(), bufSize * verticesPerFace, inkle.data() );
+      const size_t n = count * verticesPerFace;
+      for ( size_t i = 0; i < n; ++i )
+        allConnectivity.push_back( inkle[i] + 1 );  // 1-based
     }
-    writeInt( file, MDAL::toInt( facesCount * verticesPerFace * 4 ) );
-
-    writeValueArrayRecord( file, cachedIpobo );
-    writeVertices<double>( file, mesh );
+    while ( count != 0 );
   }
-  else
+
+  std::vector<double> xValues( verticesCount );
+  std::vector<double> yValues( verticesCount );
   {
-    // Compute path: load connectivity + vertices in RAM to derive IPOBO,
-    // then write everything.
-    std::vector<int> allConnectivity;
-    allConnectivity.reserve( facesCount * verticesPerFace );
+    size_t bufSize = BUFFER_SIZE;
+    std::unique_ptr<MeshVertexIterator> vertexIter = mesh->readVertices();
+    std::vector<double> coordinates( bufSize * 3 );
+    size_t count = 0;
+    size_t vertexIndex = 0;
+    do
     {
-      int bufSize = BUFFER_SIZE;
-      std::vector<int> faceOffsetBuffer( bufSize );
-      std::vector<int> inkle( bufSize * verticesPerFace );
-      std::unique_ptr<MeshFaceIterator> faceIter = mesh->readFaces();
-      size_t count = 0;
-      do
+      count = vertexIter->next( bufSize, coordinates.data() );
+      for ( size_t i = 0; i < count; ++i )
       {
-        count = faceIter->next( bufSize, faceOffsetBuffer.data(), bufSize * verticesPerFace, inkle.data() );
-        const size_t n = count * verticesPerFace;
-        for ( size_t i = 0; i < n; ++i )
-          allConnectivity.push_back( inkle[i] + 1 );  // 1-based
+        xValues[vertexIndex + i] = coordinates[i * 3];
+        yValues[vertexIndex + i] = coordinates[i * 3 + 1];
       }
-      while ( count != 0 );
+      vertexIndex += count;
     }
-
-    std::vector<double> xValues( verticesCount );
-    std::vector<double> yValues( verticesCount );
-    {
-      size_t bufSize = BUFFER_SIZE;
-      std::unique_ptr<MeshVertexIterator> vertexIter = mesh->readVertices();
-      std::vector<double> coordinates( bufSize * 3 );
-      size_t count = 0;
-      size_t vertexIndex = 0;
-      do
-      {
-        count = vertexIter->next( bufSize, coordinates.data() );
-        for ( size_t i = 0; i < count; ++i )
-        {
-          xValues[vertexIndex + i] = coordinates[i * 3];
-          yValues[vertexIndex + i] = coordinates[i * 3 + 1];
-        }
-        vertexIndex += count;
-      }
-      while ( count != 0 );
-    }
-
-    std::vector<int> ipobo = computeIPOBO( allConnectivity, xValues, yValues,
-                                           verticesCount, verticesPerFace, facesCount );
-
-    writeInt( file, MDAL::toInt( facesCount * verticesPerFace * 4 ) );
-    writeValueArray( file, allConnectivity );
-    writeInt( file, MDAL::toInt( facesCount * verticesPerFace * 4 ) );
-
-    writeValueArrayRecord( file, ipobo );
-
-    writeValueArrayRecord( file, xValues );
-    writeValueArrayRecord( file, yValues );
+    while ( count != 0 );
   }
+
+  std::vector<int> ipobo = computeIPOBO( allConnectivity, xValues, yValues,
+                                         verticesCount, verticesPerFace, facesCount );
+
+  writeInt( file, MDAL::toInt( facesCount * verticesPerFace * 4 ) );
+  writeValueArray( file, allConnectivity );
+  writeInt( file, MDAL::toInt( facesCount * verticesPerFace * 4 ) );
+
+  writeValueArrayRecord( file, ipobo );
+
+  writeValueArrayRecord( file, xValues );
+  writeValueArrayRecord( file, yValues );
 
   file.close();
 }

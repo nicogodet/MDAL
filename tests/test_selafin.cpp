@@ -322,23 +322,18 @@ TEST( MeshSLFTest, IPOBOComputation )
 
   EXPECT_EQ( ipobo[4], 0 ) << "Centre vertex should be interior";
 
-  std::vector<int> boundaryVals;
-  for ( int v : ipobo )
-    if ( v > 0 ) boundaryVals.push_back( v );
-  EXPECT_EQ( boundaryVals.size(), 8u ) << "8 perimeter vertices should be boundary";
-
-  std::sort( boundaryVals.begin(), boundaryVals.end() );
-  for ( size_t i = 0; i < boundaryVals.size(); ++i )
-    EXPECT_EQ( boundaryVals[i], static_cast<int>( i + 1 ) )
-        << "IPOBO boundary indices are not consecutive";
+  // TELEMAC convention: numbering starts at the bottom-left node (min x+y)
+  // and follows the external boundary counter-clockwise.
+  // Walk: 0 -> 1 -> 2 -> 5 -> 8 -> 7 -> 6 -> 3
+  std::vector<int> expected {1, 2, 3, 8, 0, 4, 7, 6, 5};
+  EXPECT_EQ( ipobo, expected );
 }
 
 TEST( MeshSLFTest, IPOBORoundTrip )
 {
-  // Round-tripping a MeshSelafin reuses the cached IPOBO from disk
-  // (no recompute). The saved file must therefore have exactly the
-  // same IPOBO array as the source — including any non-consecutive
-  // numbering produced by other tools.
+  // Saving always recomputes IPOBO from the mesh topology. The recomputed
+  // array must flag exactly the same set of boundary nodes as the source
+  // file, with values renumbered consecutively from 1.
   std::string sourceFile = test_file( "/slf/example.slf" );
   std::string savedFile = tmp_file( "/ipobo_roundtrip.slf" );
 
@@ -352,7 +347,140 @@ TEST( MeshSLFTest, IPOBORoundTrip )
   MDAL_CloseMesh( mesh );
 
   std::vector<int> savedIpobo = MDAL::SelafinFile::readIPOBO( savedFile );
-  EXPECT_EQ( sourceIpobo, savedIpobo ) << "Round-trip did not preserve IPOBO";
+  ASSERT_EQ( sourceIpobo.size(), savedIpobo.size() );
+
+  // Same boundary node set as the source
+  std::vector<int> savedBoundaryVals;
+  for ( size_t i = 0; i < sourceIpobo.size(); ++i )
+  {
+    EXPECT_EQ( sourceIpobo[i] > 0, savedIpobo[i] > 0 )
+        << "Boundary flag differs from source at vertex " << i;
+    if ( savedIpobo[i] > 0 )
+      savedBoundaryVals.push_back( savedIpobo[i] );
+  }
+
+  // Consecutive numbering 1..N
+  std::sort( savedBoundaryVals.begin(), savedBoundaryVals.end() );
+  for ( size_t i = 0; i < savedBoundaryVals.size(); ++i )
+    ASSERT_EQ( savedBoundaryVals[i], static_cast<int>( i + 1 ) )
+        << "IPOBO boundary indices are not consecutive";
+}
+
+TEST( MeshSLFTest, IPOBOIsland )
+{
+  // 4x4 vertex grid with the central cell removed: an external boundary of
+  // 12 nodes and a 4-node island (hole). Expected: external contour numbered
+  // first, CCW from the bottom-left node; island numbered after, CW from its
+  // own min(x+y) node.
+  //
+  //   12 - 13 - 14 - 15
+  //   |    |    |    |
+  //   8 -- 9 -- 10 - 11
+  //   |    | ** |    |     ** = hole
+  //   4 -- 5 -- 6 -- 7
+  //   |    |    |    |
+  //   0 -- 1 -- 2 -- 3
+  MDAL_DriverH driver = MDAL_driverFromName( "2DM" );
+  ASSERT_NE( driver, nullptr );
+  MDAL_MeshH mesh = MDAL_CreateMesh( driver );
+  ASSERT_NE( mesh, nullptr );
+
+  std::vector<double> coords;
+  for ( int j = 0; j < 4; ++j )
+    for ( int i = 0; i < 4; ++i )
+    {
+      coords.push_back( i );
+      coords.push_back( j );
+      coords.push_back( 0 );
+    }
+  MDAL_M_addVertices( mesh, 16, coords.data() );
+
+  std::vector<int> faceIndices;
+  for ( int cy = 0; cy < 3; ++cy )
+    for ( int cx = 0; cx < 3; ++cx )
+    {
+      if ( cx == 1 && cy == 1 )
+        continue;  // hole
+      int bl = cy * 4 + cx;
+      faceIndices.insert( faceIndices.end(), { bl, bl + 1, bl + 5 } );
+      faceIndices.insert( faceIndices.end(), { bl, bl + 5, bl + 4 } );
+    }
+  std::vector<int> faceSizes( 16, 3 );
+  MDAL_M_addFaces( mesh, 16, faceSizes.data(), faceIndices.data() );
+
+  std::string savedFile = tmp_file( "/ipobo_island.slf" );
+  MDAL_SaveMesh( mesh, savedFile.c_str(), "SELAFIN" );
+  ASSERT_EQ( MDAL_Status::None, MDAL_LastStatus() );
+  MDAL_CloseMesh( mesh );
+
+  std::vector<int> ipobo = MDAL::SelafinFile::readIPOBO( savedFile );
+  ASSERT_EQ( ipobo.size(), 16u );
+
+  // External CCW from vertex 0: 0,1,2,3,7,11,15,14,13,12,8,4 -> 1..12
+  // Island CW from vertex 5:    5,9,10,6                     -> 13..16
+  std::vector<int> expected
+  {
+    1,  2,  3,  4,
+    12, 13, 16, 5,
+    11, 14, 15, 6,
+    10, 9,  8,  7,
+  };
+  EXPECT_EQ( ipobo, expected );
+}
+
+TEST( MeshSLFTest, IPOBOPinchNode )
+{
+  // Two triangles sharing a single vertex (figure-eight). Edge-consuming
+  // traversal must trace both contours; the shared node keeps the number of
+  // the last contour, so one value is missing from the sequence.
+  //
+  //   1     4
+  //   | \ / |
+  //   |  0  |
+  //   | / \ |
+  //   2     3
+  MDAL_DriverH driver = MDAL_driverFromName( "2DM" );
+  ASSERT_NE( driver, nullptr );
+  MDAL_MeshH mesh = MDAL_CreateMesh( driver );
+  ASSERT_NE( mesh, nullptr );
+
+  std::vector<double> coords
+  {
+    0, 0, 0,
+    -1, 1, 0,
+    -1, -1, 0,
+    1, -1, 0,
+    1, 1, 0,
+  };
+  MDAL_M_addVertices( mesh, 5, coords.data() );
+
+  std::vector<int> faceSizes( 2, 3 );
+  std::vector<int> faceIndices
+  {
+    0, 1, 2,
+    0, 3, 4,
+  };
+  MDAL_M_addFaces( mesh, 2, faceSizes.data(), faceIndices.data() );
+
+  std::string savedFile = tmp_file( "/ipobo_pinch.slf" );
+  MDAL_SaveMesh( mesh, savedFile.c_str(), "SELAFIN" );
+  // The pinch node must be reported as a non-manifold boundary warning
+  ASSERT_EQ( MDAL_Status::Warn_InvalidElements, MDAL_LastStatus() );
+  MDAL_CloseMesh( mesh );
+
+  std::vector<int> ipobo = MDAL::SelafinFile::readIPOBO( savedFile );
+  ASSERT_EQ( ipobo.size(), 5u );
+
+  // Both contours must be numbered: every vertex is a boundary node.
+  for ( int v : ipobo )
+    EXPECT_GT( v, 0 ) << "All vertices of a figure-eight are boundary nodes";
+
+  // Left triangle first (contains the min x+y node): 2,0,1 -> 1,2,3.
+  // Right triangle second, reversed to CW: 0,4,3 -> 4,5,6.
+  // The pinch node 0 keeps the number of the last contour (4); the value 2
+  // is lost — IPOBO cannot fully represent a non-manifold boundary.
+  std::vector<int> expected {4, 3, 1, 6, 5};
+  EXPECT_EQ( ipobo, expected );
 }
 
 static MDAL_DatasetGroupH addNewScalarDatasetGroup( MDAL_MeshH mesh, MDAL_DriverH driver, std::string file )
