@@ -517,8 +517,7 @@ MDAL::DatasetGroups MDAL::DriverXdmf::parseXdmfXml( )
           xdmfFunctionDataset->swap();
         }
 
-        // This basically forces to load all data to calculate statistics
-        // (skipped when MDAL_LF_SkipStatistics is set; computed lazily later).
+        // This basically forces to load all data to calculate statistics!
         MDAL::setStatisticsIfRequired( xdmfFunctionDataset, loadFlags() );
         group->datasets.push_back( xdmfFunctionDataset );
       }
@@ -534,8 +533,7 @@ MDAL::DatasetGroups MDAL::DriverXdmf::parseXdmfXml( )
               data.first,
               time
             );
-        // This basically forces to load all data to calculate statistics
-        // (skipped when MDAL_LF_SkipStatistics is set; computed lazily later).
+        // This basically forces to load all data to calculate statistics!
         MDAL::setStatisticsIfRequired( xdmfDataset, loadFlags() );
         group->datasets.push_back( xdmfDataset );
       }
@@ -556,10 +554,7 @@ MDAL::DatasetGroups MDAL::DriverXdmf::parseXdmfXml( )
       throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Invalid group, missing timesteps" );
     }
 
-    // Verify the integrity of the dataset by computing the group's exact stats
-    // (cheap once each dataset has its own cached stats from the loop above).
-    // When MDAL_LF_SkipStatistics is set, we skip both the cache write AND the
-    // empty-group filter — the group is computed lazily on first access instead.
+    // with MDAL_LF_SkipStatistics the all-NaN group filter is skipped too
     if ( loadFlags() & MDAL_LF_SkipStatistics )
     {
       ret.emplace_back( std::move( grp ) );
