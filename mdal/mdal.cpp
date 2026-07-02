@@ -970,10 +970,14 @@ void MDAL_G_minimumMaximumApprox( MDAL_DatasetGroupH group, int sampleCount, dou
     return;
   }
 
-  if ( sampleCount < 0 )
-    sampleCount = 0;
-
   MDAL::DatasetGroup *g = static_cast< MDAL::DatasetGroup * >( group );
+  if ( sampleCount <= 0 || static_cast<size_t>( sampleCount ) >= g->datasets.size() )
+  {
+    // exact anyway, so compute through the caching path
+    MDAL_G_minimumMaximum( group, min, max );
+    return;
+  }
+
   MDAL::Statistics stats = MDAL::calculateStatisticsApprox( g, static_cast<size_t>( sampleCount ) );
   *min = stats.minimum;
   *max = stats.maximum;
