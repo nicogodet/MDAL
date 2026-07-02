@@ -638,7 +638,6 @@ MDAL::Statistics _calculateStatistics( const std::vector<double> &values, size_t
 
   ret.minimum = min;
   ret.maximum = max;
-  ret.isComputed = true;
   return ret;
 }
 
@@ -663,7 +662,6 @@ MDAL::Statistics MDAL::calculateStatistics( DatasetGroup *grp )
     }
     combineStatistics( ret, dsStats );
   }
-  ret.isComputed = true;
   return ret;
 }
 
@@ -677,13 +675,9 @@ MDAL::Statistics MDAL::calculateStatisticsApprox( DatasetGroup *grp, size_t samp
   if ( sampleCount == 0 || sampleCount >= n )
     return calculateStatistics( grp );
 
-  size_t lastIdx = std::numeric_limits<size_t>::max();
   for ( size_t i = 0; i < sampleCount; ++i )
   {
     const size_t idx = ( sampleCount == 1 ) ? 0 : ( i * ( n - 1 ) ) / ( sampleCount - 1 );
-    if ( idx == lastIdx )
-      continue;
-
     std::shared_ptr<Dataset> ds = grp->datasets[idx];
     MDAL::Statistics dsStats = ds->statistics();
     if ( !dsStats.isComputed )
@@ -692,7 +686,6 @@ MDAL::Statistics MDAL::calculateStatisticsApprox( DatasetGroup *grp, size_t samp
       ds->setStatistics( dsStats );
     }
     combineStatistics( ret, dsStats );
-    lastIdx = idx;
   }
   return ret;
 }
@@ -778,7 +771,6 @@ MDAL::Statistics MDAL::calculateStatistics( Dataset *dataset )
     i += valsRead;
   }
 
-  ret.isComputed = true;
   return ret;
 }
 
