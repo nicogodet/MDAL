@@ -244,6 +244,10 @@ enum MDAL_LoadFlag
    * MDAL_G_minimumMaximumApprox() will compute on-the-fly for the sampled
    * datasets only (fast). This dramatically reduces initial load times for
    * meshes with many timesteps when an exact min/max is not required upfront.
+   *
+   * The deferred computation reads dataset data on demand; like the rest of
+   * MDAL, it is not thread-safe: a given mesh handle must be used from a
+   * single thread at a time.
    */
   MDAL_LF_SkipStatistics = 1 << 0
 };
