@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
+#include <limits>
 #include <cassert>
 #include <memory>
 #include <algorithm>
@@ -252,6 +254,19 @@ std::unique_ptr<MDAL::Mesh> MDAL::SelafinFile::createMesh( const std::string &fi
   populateDataset( mesh.get(), std::move( reader ) );
 
   return mesh;
+}
+
+std::vector<int> MDAL::SelafinFile::ipoboArray()
+{
+  if ( !mParsed )
+    parseFile();
+
+  // on a partitioned file (IPARAM(8) or IPARAM(9) != 0) the record at this
+  // position holds KNOLG, not IPOBO — nothing reusable
+  if ( mParameters.size() < 9 || mParameters[7] != 0 || mParameters[8] != 0 )
+    return std::vector<int>();
+
+  return readIntArr( mIPOBOStreamPosition, 0, mVerticesCount );
 }
 
 void MDAL::SelafinFile::populateDataset( MDAL::Mesh *mesh, const std::string &fileName )
@@ -526,9 +541,8 @@ int MDAL::SelafinFile::readInt( )
 {
   unsigned char data[4];
 
-  if ( mIn.read( reinterpret_cast< char * >( &data ), 4 ) )
-    if ( !mIn )
-      throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Unable to open stream for reading int" );
+  if ( !mIn.read( reinterpret_cast< char * >( &data ), 4 ) )
+    throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Unable to read int, stream failed" );
   if ( mChangeEndianness )
   {
     std::reverse( reinterpret_cast< char * >( &data ), reinterpret_cast< char * >( &data ) + 4 );
@@ -951,19 +965,52 @@ static void writeValueArray( std::ofstream &file, const std::vector<T> &array )
     writeValue( file, value );
 }
 
-template<typename T>
-static void writeVertices( std::ofstream &file, MDAL::Mesh *mesh )
+// Writes the connectivity record (1-based indices). When `collect` is
+// non-null the same indices are appended to it (needed to build IPOBO).
+static void writeConnectivityRecord( std::ofstream &file, MDAL::Mesh *mesh,
+                                     size_t facesCount, size_t verticesPerFace,
+                                     std::vector<int> *collect )
 {
+  const int recordSize = MDAL::toInt( facesCount * verticesPerFace * 4 );
+  writeInt( file, recordSize );
+  if ( collect )
+    collect->reserve( facesCount * verticesPerFace );
+  if ( facesCount > 0 )
+  {
+    const int bufSize = BUFFER_SIZE;
+    std::vector<int> faceOffsetBuffer( bufSize );
+    std::vector<int> inkle( bufSize * verticesPerFace );
+    std::unique_ptr<MDAL::MeshFaceIterator> faceIter = mesh->readFaces();
+    size_t count = 0;
+    do
+    {
+      count = faceIter->next( bufSize, faceOffsetBuffer.data(), bufSize * verticesPerFace, inkle.data() );
+      const size_t n = count * verticesPerFace;
+      for ( size_t i = 0; i < n; ++i )
+      {
+        const int node = inkle[i] + 1;  // SELAFIN is 1-based
+        writeInt( file, node );
+        if ( collect )
+          collect->push_back( node );
+      }
+    }
+    while ( count != 0 );
+  }
+  writeInt( file, recordSize );
+}
+
+static void readVerticesXY( MDAL::Mesh *mesh, std::vector<double> &xValues, std::vector<double> &yValues )
+{
+  const size_t verticesCount = mesh->verticesCount();
+  xValues.resize( verticesCount );
+  yValues.resize( verticesCount );
+  const size_t bufferSize = BUFFER_SIZE;
+  std::vector<double> coordinates( bufferSize * 3 );
   std::unique_ptr<MDAL::MeshVertexIterator> vertexIter = mesh->readVertices();
-  size_t verticesCount = mesh->verticesCount();
-  std::vector<T> xValues( verticesCount );
-  std::vector<T> yValues( verticesCount );
   size_t count = 0;
   size_t vertexIndex = 0;
-  size_t bufferSize = BUFFER_SIZE;
   do
   {
-    std::vector<double> coordinates( bufferSize * 3 );
     count = vertexIter->next( bufferSize, coordinates.data() );
     for ( size_t i = 0; i < count; ++i )
     {
@@ -973,14 +1020,390 @@ static void writeVertices( std::ofstream &file, MDAL::Mesh *mesh )
     vertexIndex += count;
   }
   while ( count != 0 );
-  writeValueArrayRecord( file, xValues );
-  writeValueArrayRecord( file, yValues );
 }
 
-void MDAL::DriverSelafin::save( const std::string &fileName, const std::string &, MDAL::Mesh *mesh )
-{
-  std::ofstream file = MDAL::openOutputFile( fileName.c_str(), std::ofstream::binary );
+// Helpers for computeIPOBO. All operate on 1-based node ids: x[node-1] / y[node-1].
 
+// Shoelace signed area of an OPEN ring; > 0 means counter-clockwise (CCW).
+static double ipoboSignedArea( const std::vector<int> &ring,
+                               const std::vector<double> &x,
+                               const std::vector<double> &y )
+{
+  double area = 0.0;
+  const size_t n = ring.size();
+  for ( size_t i = 0; i < n; ++i )
+  {
+    const int a = ring[i];
+    const int b = ring[( i + 1 ) % n];
+    area += x[a - 1] * y[b - 1] - x[b - 1] * y[a - 1];
+  }
+  return 0.5 * area;
+}
+
+// Ray-casting point-in-polygon over an OPEN ring.
+static bool ipoboPointInPolygon( double px, double py,
+                                 const std::vector<int> &ring,
+                                 const std::vector<double> &x,
+                                 const std::vector<double> &y )
+{
+  bool inside = false;
+  const size_t n = ring.size();
+  size_t j = n - 1;
+  for ( size_t i = 0; i < n; ++i )
+  {
+    const double pxi = x[ring[i] - 1];
+    const double pyi = y[ring[i] - 1];
+    const double pxj = x[ring[j] - 1];
+    const double pyj = y[ring[j] - 1];
+    // the straddle test guarantees pyi != pyj, so the division is safe
+    if ( ( ( pyi > py ) != ( pyj > py ) ) &&
+         ( px < ( pxj - pxi ) * ( py - pyi ) / ( pyj - pyi ) + pxi ) )
+      inside = !inside;
+    j = i;
+  }
+  return inside;
+}
+
+// True when (px,py) lies exactly on a vertex or an edge of the OPEN ring.
+static bool ipoboPointOnRing( double px, double py,
+                              const std::vector<int> &ring,
+                              const std::vector<double> &x,
+                              const std::vector<double> &y )
+{
+  const size_t n = ring.size();
+  for ( size_t i = 0; i < n; ++i )
+  {
+    const double ax = x[ring[i] - 1];
+    const double ay = y[ring[i] - 1];
+    const double bx = x[ring[( i + 1 ) % n] - 1];
+    const double by = y[ring[( i + 1 ) % n] - 1];
+    const double cross = ( bx - ax ) * ( py - ay ) - ( by - ay ) * ( px - ax );
+    if ( cross != 0.0 )
+      continue;
+    const double dot = ( px - ax ) * ( bx - ax ) + ( py - ay ) * ( by - ay );
+    if ( dot < 0.0 )
+      continue;
+    if ( dot <= ( bx - ax ) * ( bx - ax ) + ( by - ay ) * ( by - ay ) )
+      return true;
+  }
+  return false;
+}
+
+// First node of ringI that does not lie on ringJ, usable as a
+// point-in-polygon probe. Superimposed boundary nodes (e.g. zero-width
+// weirs) can place ringI's start exactly ON ringJ, where ray casting is
+// ill-defined. Returns -1 when every node of ringI lies on ringJ.
+static int ipoboRepresentative( const std::vector<int> &ringI,
+                                const std::vector<int> &ringJ,
+                                const std::vector<double> &x,
+                                const std::vector<double> &y )
+{
+  for ( const int node : ringI )
+    if ( !ipoboPointOnRing( x[node - 1], y[node - 1], ringJ, x, y ) )
+      return node;
+  return -1;
+}
+
+// Boundary node with minimum (x+y); ties broken by smallest node id (the map
+// is ordered by id, so the first strict minimum wins).
+static int ipoboPickSouthwest( const std::map<int, std::set<int>> &neighbours,
+                               const std::vector<double> &x,
+                               const std::vector<double> &y )
+{
+  int best = -1;
+  double bestXY = std::numeric_limits<double>::max();
+  for ( const auto &kv : neighbours )
+  {
+    const int node = kv.first;
+    const double xy = x[node - 1] + y[node - 1];
+    if ( xy < bestXY )
+    {
+      bestXY = xy;
+      best = node;
+    }
+  }
+  return best;
+}
+
+// Walk one closed loop from `start`, consuming edges from `neighbours`.
+// Returns the closed loop [start, ..., start] in `loopOut` and true on
+// success; false on a dead end or if `maxSteps` is exceeded.
+static bool ipoboWalkOneLoop( std::map<int, std::set<int>> &neighbours,
+                              int start,
+                              size_t maxSteps,
+                              std::vector<int> &loopOut )
+{
+  loopOut.clear();
+  auto eraseEdge = [&neighbours]( int a, int b )
+  {
+    auto it = neighbours.find( a );
+    if ( it != neighbours.end() )
+    {
+      it->second.erase( b );
+      if ( it->second.empty() )
+        neighbours.erase( it );
+    }
+  };
+
+  auto itStart = neighbours.find( start );
+  if ( itStart == neighbours.end() || itStart->second.empty() )
+    return false;
+
+  loopOut.push_back( start );
+  int nxt = *itStart->second.begin();
+  eraseEdge( start, nxt );
+  eraseEdge( nxt, start );
+
+  size_t steps = 0;
+  while ( nxt != start )
+  {
+    loopOut.push_back( nxt );
+    if ( ++steps > maxSteps )
+      return false;
+    auto it = neighbours.find( nxt );
+    if ( it == neighbours.end() || it->second.empty() )
+      return false;  // dead end
+    const int newNxt = *it->second.begin();
+    eraseEdge( nxt, newNxt );
+    eraseEdge( newNxt, nxt );
+    nxt = newNxt;
+  }
+  loopOut.push_back( start );  // close the ring
+  return true;
+}
+
+// Iterative DFS over the containment forest; children[] must already be
+// sorted in the desired visit order.
+static void ipoboDfs( int root,
+                      const std::vector<std::vector<int>> &children,
+                      std::vector<int> &orderOut )
+{
+  std::vector<int> stack( 1, root );
+  while ( !stack.empty() )
+  {
+    const int node = stack.back();
+    stack.pop_back();
+    orderOut.push_back( node );
+    // push in reverse so children pop in ascending key order
+    for ( auto it = children[node].rbegin(); it != children[node].rend(); ++it )
+      stack.push_back( *it );
+  }
+}
+
+// Computes the IPOBO array from the mesh connectivity and vertex coordinates:
+//   IPOBO[i] = 0 for interior nodes,
+//   IPOBO[i] = N (consecutive, starting at 1) for boundary nodes.
+//
+// Boundary extraction and contour nesting follow the approach of opentelemac's
+// pretel/extract_contour.py: boundary edges are the edges used by exactly one
+// face, each contour is walked from its south-west node, external contours are
+// oriented CCW and holes CW. The consecutive IPOBO numbering itself — depth
+// parity for arbitrarily nested contours, containment forest and DFS emission
+// order — is original to MDAL. Implemented independently and validated against
+// IPOBO arrays produced by TELEMAC tools.
+//
+// Connectivity indices are 1-based (SELAFIN convention); MDAL writes 2D only.
+// Returns a 0-indexed vector sized like x. On degenerate, non-manifold or
+// non-triangular input, returns an all-zero vector and warns.
+static std::vector<int> computeIPOBO(
+  const std::vector<int> &connectivity,  // 1-based vertex indices
+  const std::vector<double> &x,
+  const std::vector<double> &y,
+  size_t verticesPerFace )
+{
+  const size_t verticesCount = x.size();
+
+  auto failZeros = [verticesCount]() -> std::vector<int>
+  {
+    MDAL::Log::warning( MDAL_Status::Warn_InvalidElements,
+                        "SELAFIN: IPOBO could not be built "
+                        "(degenerate/non-manifold/non-triangular mesh); written as zeros" );
+    return std::vector<int>( verticesCount, 0 );
+  };
+
+  std::vector<int> ipobo( verticesCount, 0 );
+
+  // --- Pre-validation: triangles only, well-formed 1-based connectivity ---
+  // computeIPOBO is a free-standing helper; guard against malformed input so
+  // x[node-1] / ipobo[node-1] can never read or write out of bounds.
+  if ( connectivity.empty() )
+    return ipobo;  // no faces — no boundary to build (zeros, no warning)
+  if ( verticesPerFace != 3 )
+    return failZeros();  // SELAFIN 2D is triangles only
+  if ( connectivity.size() % verticesPerFace != 0 || x.size() != y.size() )
+    return failZeros();
+  for ( const int node : connectivity )
+    if ( node < 1 || static_cast<size_t>( node ) > verticesCount )
+      return failZeros();
+
+  const size_t facesCount = connectivity.size() / verticesPerFace;
+
+  // --- Canonical edges: sorted packed (min,max) keys ---
+  std::vector<long long> edges;
+  edges.reserve( connectivity.size() );
+  for ( size_t f = 0; f < facesCount; ++f )
+  {
+    for ( size_t v = 0; v < verticesPerFace; ++v )
+    {
+      const long long a = connectivity[f * verticesPerFace + v];
+      const long long b = connectivity[f * verticesPerFace + ( v + 1 ) % verticesPerFace];
+      edges.push_back( ( std::min( a, b ) << 32 ) | std::max( a, b ) );
+    }
+  }
+  std::sort( edges.begin(), edges.end() );
+
+  // --- Boundary adjacency (edges used by exactly one face) ---
+  // Ordered map + ordered set: deterministic SW start and *begin() walk choice.
+  std::map<int, std::set<int>> neighbours;
+  size_t boundaryEdgeCount = 0;
+  for ( size_t i = 0; i < edges.size(); )
+  {
+    size_t j = i + 1;
+    while ( j < edges.size() && edges[j] == edges[i] )
+      ++j;
+    if ( j - i == 1 )
+    {
+      const int a = static_cast<int>( edges[i] >> 32 );
+      const int b = static_cast<int>( edges[i] & 0xffffffffLL );
+      neighbours[a].insert( b );
+      neighbours[b].insert( a );
+      ++boundaryEdgeCount;
+    }
+    i = j;
+  }
+
+  if ( neighbours.empty() )
+    return ipobo;  // closed surface / no boundary — zeros, NO warning
+
+  // Manifold invariant: every boundary node must have degree exactly 2, so the
+  // boundary decomposes into disjoint simple cycles and the edge-consuming walk
+  // can never close a wrong sub-loop. Pinch points break this invariant and
+  // are deliberately rejected (zeros + warning) rather than risk a mis-traced
+  // boundary.
+  for ( const auto &kv : neighbours )
+    if ( kv.second.size() != 2 )
+      return failZeros();
+
+  // --- Trace every closed boundary loop (consumes `neighbours`) ---
+  const size_t maxSteps = boundaryEdgeCount + 1;
+  std::vector<std::vector<int>> loops;  // each CLOSED [start..start]
+  while ( !neighbours.empty() )
+  {
+    const int start = ipoboPickSouthwest( neighbours, x, y );
+    std::vector<int> loop;
+    if ( !ipoboWalkOneLoop( neighbours, start, maxSteps, loop ) )
+      return failZeros();
+    loops.push_back( std::move( loop ) );
+  }
+
+  const size_t nLoops = loops.size();
+
+  // --- Open rings (drop the closing duplicate) ---
+  // `rings` keep the WALK orientation and are never reversed, so rings[i][0] is
+  // always the south-west start node — the point-in-polygon probe base for the
+  // depth and parent tests, and the south-west key of the DFS ordering.
+  // (Orientation reverses the CLOSED loops[] used only for numbering, which
+  // keeps loops[i][0] == rings[i][0].)
+  std::vector<std::vector<int>> rings( nLoops );
+  for ( size_t i = 0; i < nLoops; ++i )
+    rings[i].assign( loops[i].begin(), loops[i].end() - 1 );
+
+  // --- Nesting depth via point-in-polygon (before any orientation) ---
+  std::vector<int> depth( nLoops, 0 );
+  for ( size_t i = 0; i < nLoops; ++i )
+  {
+    for ( size_t j = 0; j < nLoops; ++j )
+    {
+      if ( i == j )
+        continue;
+      const int rep = ipoboRepresentative( rings[i], rings[j], x, y );
+      if ( rep < 0 )
+        return failZeros();  // rings fully superimposed
+      if ( ipoboPointInPolygon( x[rep - 1], y[rep - 1], rings[j], x, y ) )
+        ++depth[i];
+    }
+  }
+
+  // --- Orient by depth parity (even = external = CCW; odd = island = CW) ---
+  // Reverse the CLOSED loops[i] (numbering direction only); rings[] stay frozen.
+  for ( size_t i = 0; i < nLoops; ++i )
+  {
+    if ( loops[i].size() <= 3 )
+      continue;  // unreachable: the degree-2 check makes the minimum cycle 3 nodes (closed size 4); kept as guard
+    const bool ccw = ipoboSignedArea( rings[i], x, y ) > 0.0;
+    const bool even = ( depth[i] % 2 == 0 );
+    if ( ( even && !ccw ) || ( !even && ccw ) )
+      std::reverse( loops[i].begin(), loops[i].end() );
+  }
+
+  // --- Containment forest (parent = deepest enclosing loop) ---
+  // Tie-break: first j in ascending index order at the max qualifying depth.
+  std::vector<std::vector<int>> children( nLoops );
+  for ( size_t i = 0; i < nLoops; ++i )
+  {
+    if ( depth[i] == 0 )
+      continue;
+    int bestParent = -1;
+    int bestDepth = -1;
+    for ( size_t j = 0; j < nLoops; ++j )
+    {
+      if ( i == j || depth[j] >= depth[i] )
+        continue;
+      const int rep = ipoboRepresentative( rings[i], rings[j], x, y );
+      if ( rep < 0 )
+        return failZeros();
+      if ( ipoboPointInPolygon( x[rep - 1], y[rep - 1], rings[j], x, y ) && depth[j] > bestDepth )
+      {
+        bestDepth = depth[j];
+        bestParent = static_cast<int>( j );
+      }
+    }
+    if ( bestParent >= 0 )
+      children[bestParent].push_back( static_cast<int>( i ) );
+  }
+
+  // --- DFS order; roots (depth 0) and children sorted by SW key ---
+  auto lessByKey = [&rings, &x, &y]( int a, int b )
+  {
+    const int na = rings[a][0];
+    const int nb = rings[b][0];
+    const double ka = x[na - 1] + y[na - 1];
+    const double kb = x[nb - 1] + y[nb - 1];
+    if ( ka != kb )
+      return ka < kb;
+    return na < nb;
+  };
+
+  std::vector<int> roots;
+  for ( size_t i = 0; i < nLoops; ++i )
+    if ( depth[i] == 0 )
+      roots.push_back( static_cast<int>( i ) );
+  std::sort( roots.begin(), roots.end(), lessByKey );
+  for ( auto &kids : children )
+    std::sort( kids.begin(), kids.end(), lessByKey );
+
+  std::vector<int> order;
+  order.reserve( nLoops );
+  for ( const int r : roots )
+    ipoboDfs( r, children, order );
+
+  // every loop must be reachable through the forest; a loop with depth > 0 but
+  // no qualifying parent would otherwise be silently left unnumbered
+  if ( order.size() != nLoops )
+    return failZeros();
+
+  // --- Consecutive 1-based numbering in traversal order ---
+  // Yield each oriented loop without its closing duplicate (loops[idx][:-1]).
+  int id = 0;
+  for ( const int idx : order )
+    for ( size_t k = 0; k + 1 < loops[idx].size(); ++k )
+      ipobo[loops[idx][k] - 1] = ++id;
+
+  return ipobo;
+}
+
+static void writeMeshFrame( std::ofstream &file, MDAL::Mesh *mesh )
+{
   std::string header( "Selafin file created by MDAL library" );
   std::string remainingStr( 72 - header.size(), ' ' );
   header.append( remainingStr );
@@ -1011,35 +1434,82 @@ void MDAL::DriverSelafin::save( const std::string &fileName, const std::string &
   elem[3] = 1;
   writeValueArrayRecord( file, elem );
 
-  //connectivity table
-  int bufferSize = BUFFER_SIZE;
-  std::vector<int> faceOffsetBuffer( bufferSize );
-  std::unique_ptr<MeshFaceIterator> faceIter = mesh->readFaces();
-  size_t count = 0;
-  writeInt( file, MDAL::toInt( facesCount * verticesPerFace * 4 ) );
-  if ( facesCount > 0 )
+  // Reuse the IPOBO from disk when saving a MeshSelafin: its frame cannot be
+  // modified through MDAL (Mesh::addVertices/addFaces are no-ops on
+  // non-editable meshes), so the source topology always matches. The stored
+  // array is reused only when it carries real data: files written by older
+  // MDAL versions stored zeros, which are recomputed instead, and an
+  // unreadable record simply falls back to the compute path.
+  std::vector<int> cachedIpobo;
+  if ( auto *meshSlf = dynamic_cast<MDAL::MeshSelafin *>( mesh ) )
   {
-    do
+    try
     {
-      std::vector<int> inkle( bufferSize * verticesPerFace );
-      count = faceIter->next( bufferSize, faceOffsetBuffer.data(), bufferSize * verticesPerFace, inkle.data() );
-      inkle.resize( count * verticesPerFace );
-      for ( size_t i = 0; i < inkle.size(); ++i )
-        inkle[i]++;
-
-      writeValueArray( file, inkle );
+      cachedIpobo = meshSlf->ipoboArray();
     }
-    while ( count != 0 );
+    catch ( MDAL::Error & )
+    {
+      cachedIpobo.clear();
+    }
   }
-  writeInt( file, MDAL::toInt( facesCount * verticesPerFace * 4 ) );
+  const bool cachedUsable = cachedIpobo.size() == verticesCount &&
+  std::any_of( cachedIpobo.begin(), cachedIpobo.end(), []( int v ) { return v != 0; } );
 
-  // IPOBO filled with 0
-  writeValueArrayRecord( file, std::vector<int>( verticesCount, 0 ) );
+  // Stream the connectivity while writing it; gather a copy only when the
+  // IPOBO must be computed from it.
+  std::vector<int> connectivity;
+  writeConnectivityRecord( file, mesh, facesCount, verticesPerFace,
+                           cachedUsable ? nullptr : &connectivity );
 
-  //Vertices
-  writeVertices<double>( file, mesh );
+  std::vector<double> xValues, yValues;
+  readVerticesXY( mesh, xValues, yValues );
 
-  file.close();
+  std::vector<int> ipobo;
+  if ( cachedUsable )
+    ipobo = std::move( cachedIpobo );
+  else
+    ipobo = computeIPOBO( connectivity, xValues, yValues, verticesPerFace );
+
+  writeValueArrayRecord( file, ipobo );
+  writeValueArrayRecord( file, xValues );
+  writeValueArrayRecord( file, yValues );
+}
+
+void MDAL::DriverSelafin::save( const std::string &fileName, const std::string &, MDAL::Mesh *mesh )
+{
+  // Write to a temporary file first: a MeshSelafin's frame and IPOBO are read
+  // lazily from the source file during the save, which may be fileName itself.
+  const std::string tempFileName = fileName + ".tmp";
+
+  try
+  {
+    std::ofstream file = MDAL::openOutputFile( tempFileName, std::ofstream::binary );
+    if ( !file.is_open() )
+      throw MDAL::Error( MDAL_Status::Err_FailToWriteToDisk, "Could not open file " + tempFileName );
+
+    writeMeshFrame( file, mesh );
+    file.close();
+
+    // a MeshSelafin keeps its source file open; release it before replacing
+    // the target in case the mesh is saved onto its own source (the reader
+    // reopens lazily on next access)
+    mesh->closeSource();
+
+    if ( MDAL::fileExists( fileName ) && !MDAL::deleteFile( fileName ) )
+      throw MDAL::Error( MDAL_Status::Err_FailToWriteToDisk, "Unable to replace file " + fileName );
+    if ( !MDAL::renameFile( tempFileName, fileName ) )
+      throw MDAL::Error( MDAL_Status::Err_FailToWriteToDisk, "Unable to write file " + fileName );
+  }
+  catch ( MDAL::Error &err )
+  {
+    MDAL::deleteFile( tempFileName );
+    MDAL::Log::error( err, name() );
+  }
+  catch ( MDAL_Status status )
+  {
+    MDAL::deleteFile( tempFileName );
+    MDAL::Log::error( status, name(), "error occurred while saving mesh frame" );
+  }
 }
 
 std::string MDAL::DriverSelafin::writeDatasetOnFileSuffix() const
