@@ -231,7 +231,7 @@ MDAL_EXPORT int MDAL_DR_faceVerticesMaximumCount( MDAL_DriverH driver );
  *
  * Combine with bitwise OR.
  *
- * \since MDAL 1.4
+ * \since MDAL 1.4.0
  */
 enum MDAL_LoadFlag
 {
@@ -248,6 +248,10 @@ enum MDAL_LoadFlag
    * The deferred computation reads dataset data on demand; like the rest of
    * MDAL, it is not thread-safe: a given mesh handle must be used from a
    * single thread at a time.
+   *
+   * Skipping statistics can also skip driver-side validity filtering based on
+   * them: e.g. XDMF groups without any valid value, normally dropped at load
+   * time, are kept when this flag is set.
    */
   MDAL_LF_SkipStatistics = 1 << 0
 };
@@ -270,7 +274,7 @@ MDAL_EXPORT MDAL_MeshH MDAL_LoadMesh( const char *uri );
  * Currently the only supported flag is MDAL_LF_SkipStatistics, useful to
  * avoid the up-front per-dataset stats scan on large multi-timestep files.
  *
- * \since MDAL 1.4
+ * \since MDAL 1.4.0
  */
 MDAL_EXPORT MDAL_MeshH MDAL_LoadMeshWithFlags( const char *uri, int flags );
 
@@ -673,7 +677,7 @@ MDAL_EXPORT int MDAL_G_maximumVerticalLevelCount( MDAL_DatasetGroupH group );
  * Returns the minimum and maximum values of the group
  * Returns NaN on error
  *
- * \note Since MDAL 1.4, when a mesh was loaded with MDAL_LF_SkipStatistics
+ * \note Since MDAL 1.4.0, when a mesh was loaded with MDAL_LF_SkipStatistics
  * the driver did not pre-compute statistics; the first call to this function
  * for such a group will block to compute the exact range over every dataset
  * (potentially slow). The result is cached so subsequent calls are O(1).
@@ -683,18 +687,23 @@ MDAL_EXPORT void MDAL_G_minimumMaximum( MDAL_DatasetGroupH group, double *min, d
 
 /**
  * Returns an approximate minimum and maximum of the group, computed from a sample
- * of \a sampleCount evenly-spaced datasets (endpoints included). Useful to avoid
- * scanning every timestep on initial display, when an exact range is not required.
+ * of \a sampleCount evenly-spaced datasets (endpoints included; the middle
+ * dataset when \a sampleCount is 1). Useful to avoid scanning every timestep
+ * on initial display, when an exact range is not required.
  *
- * When \a sampleCount is 0 or greater or equal to the dataset count of the group,
- * falls back to MDAL_G_minimumMaximum (exact).
+ * The computation falls back to the exact range of MDAL_G_minimumMaximum()
+ * (cached as such) when \a sampleCount is 0 (or negative) or greater or equal
+ * to the dataset count of the group, and when the sample contains no valid
+ * value (e.g. a domain entirely dry at the sampled times).
  *
- * The returned values are NOT cached into the group statistics, so a later call
- * to MDAL_G_minimumMaximum will still compute and return the exact range.
+ * The approximate values are never cached as the group statistics, so a later
+ * call to MDAL_G_minimumMaximum will still compute and return the exact range.
+ * The statistics of the sampled datasets themselves ARE cached, making repeated
+ * calls cheap and pre-warming a later exact computation.
  *
  * Returns NaN on error
  *
- * \since MDAL 1.4
+ * \since MDAL 1.4.0
  */
 MDAL_EXPORT void MDAL_G_minimumMaximumApprox( MDAL_DatasetGroupH group, int sampleCount, double *min, double *max );
 
@@ -881,6 +890,11 @@ MDAL_EXPORT int MDAL_D_data( MDAL_DatasetH dataset, int indexStart, int count, M
 /**
  * Returns the minimum and maximum values of the dataset
  * Returns NaN on error
+ *
+ * \note Since MDAL 1.4.0, when a mesh was loaded with MDAL_LF_SkipStatistics
+ * the driver did not pre-compute statistics; the first call to this function
+ * for such a dataset will block to compute the exact range over its values.
+ * The result is cached so subsequent calls are O(1).
  */
 MDAL_EXPORT void MDAL_D_minimumMaximum( MDAL_DatasetH dataset, double *min, double *max );
 
