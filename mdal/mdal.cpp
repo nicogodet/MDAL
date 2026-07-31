@@ -7,7 +7,6 @@
 #include <stddef.h>
 #include <limits>
 #include <assert.h>
-#include <cmath>
 #include <memory>
 
 #include "mdal.h"

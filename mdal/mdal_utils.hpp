@@ -184,11 +184,16 @@ namespace MDAL
   //! so that datasets added later are taken into account
   Statistics ensureStatistics( DatasetGroup *group );
 
-  //! Sets stats unless loadFlags has MDAL_LF_SkipStatistics. Drivers should
-  //! use this in place of `target->setStatistics( calculateStatistics(target) )`.
-  void setStatisticsIfRequired( const std::shared_ptr<Dataset> &dataset, int loadFlags );
-  void setStatisticsIfRequired( const std::shared_ptr<DatasetGroup> &group, int loadFlags );
-  void setStatisticsIfRequired( DatasetGroup *group, int loadFlags );
+  //! Computes and stores statistics for \a target (raw or shared pointer to
+  //! a Dataset or DatasetGroup) unless loadFlags has MDAL_LF_SkipStatistics.
+  //! Drivers should use this in place of
+  //! `target->setStatistics( calculateStatistics( target ) )`.
+  template <typename T>
+  void setStatisticsIfRequired( const T &target, int loadFlags )
+  {
+    if ( target && !( loadFlags & MDAL_LF_SkipStatistics ) )
+      target->setStatistics( calculateStatistics( &*target ) );
+  }
 
   // mesh & datasets
   //! Adds bed elevatiom dataset group to mesh

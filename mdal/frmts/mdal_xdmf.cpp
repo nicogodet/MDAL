@@ -556,21 +556,18 @@ MDAL::DatasetGroups MDAL::DriverXdmf::parseXdmfXml( )
       throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Invalid group, missing timesteps" );
     }
 
-    // Verify the integrity of the dataset by computing the group's exact stats
-    // (cheap once each dataset has its own cached stats from the loop above).
-    // When MDAL_LF_SkipStatistics is set, we skip both the cache write AND the
-    // empty-group filter — the group is computed lazily on first access instead.
-    if ( loadFlags() & MDAL_LF_SkipStatistics )
-    {
-      ret.emplace_back( std::move( grp ) );
-    }
-    else
+    // Verify the integrity of the group by computing its exact stats (cheap
+    // once each dataset has its own cached stats from the loop above). With
+    // MDAL_LF_SkipStatistics both the cache write and this empty-group filter
+    // are skipped; the group is computed lazily on first access instead.
+    if ( !( loadFlags() & MDAL_LF_SkipStatistics ) )
     {
       const MDAL::Statistics stats = MDAL::calculateStatistics( grp );
       grp->setStatistics( stats );
-      if ( !std::isnan( stats.minimum ) )
-        ret.emplace_back( std::move( grp ) );
+      if ( std::isnan( stats.minimum ) )
+        continue;
     }
+    ret.emplace_back( std::move( grp ) );
   }
 
   return ret;

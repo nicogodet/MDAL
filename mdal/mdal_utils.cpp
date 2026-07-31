@@ -638,7 +638,6 @@ MDAL::Statistics _calculateStatistics( const std::vector<double> &values, size_t
 
   ret.minimum = min;
   ret.maximum = max;
-  ret.isComputed = true;
   return ret;
 }
 
@@ -653,9 +652,9 @@ MDAL::Statistics MDAL::calculateStatistics( DatasetGroup *grp )
   if ( !grp )
     return ret;
 
+  // note: isComputed is a property of the caches only, set by setStatistics()
   for ( std::shared_ptr<Dataset> &ds : grp->datasets )
     combineStatistics( ret, ensureStatistics( ds.get() ) );
-  ret.isComputed = true;
   return ret;
 }
 
@@ -706,29 +705,6 @@ MDAL::Statistics MDAL::calculateStatisticsApprox( DatasetGroup *grp, size_t samp
     return ensureStatistics( grp );
 
   return ret;
-}
-
-void MDAL::setStatisticsIfRequired( const std::shared_ptr<Dataset> &dataset, int loadFlags )
-{
-  if ( !dataset )
-    return;
-  if ( loadFlags & MDAL_LF_SkipStatistics )
-    return;
-  dataset->setStatistics( MDAL::calculateStatistics( dataset ) );
-}
-
-void MDAL::setStatisticsIfRequired( const std::shared_ptr<DatasetGroup> &group, int loadFlags )
-{
-  setStatisticsIfRequired( group.get(), loadFlags );
-}
-
-void MDAL::setStatisticsIfRequired( DatasetGroup *group, int loadFlags )
-{
-  if ( !group )
-    return;
-  if ( loadFlags & MDAL_LF_SkipStatistics )
-    return;
-  group->setStatistics( MDAL::calculateStatistics( group ) );
 }
 
 MDAL::Statistics MDAL::calculateStatistics( std::shared_ptr<Dataset> dataset )
@@ -782,14 +758,13 @@ MDAL::Statistics MDAL::calculateStatistics( Dataset *dataset )
         dataset->activeData( i, bufLen, activeBuffer.data() );
     }
     if ( valsRead == 0 )
-      break;
+      return ret;
 
     MDAL::Statistics dsStats = _calculateStatistics( buffer, valsRead, isVector, activeBuffer );
     combineStatistics( ret, dsStats );
     i += valsRead;
   }
 
-  ret.isComputed = true;
   return ret;
 }
 
