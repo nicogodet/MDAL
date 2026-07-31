@@ -143,7 +143,7 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverManager::load(
   return mesh;
 }
 
-void MDAL::DriverManager::loadDatasets( Mesh *mesh, const std::string &datasetFile ) const
+void MDAL::DriverManager::loadDatasets( Mesh *mesh, const std::string &datasetFile, int loadFlags ) const
 {
   if ( !MDAL::fileExists( datasetFile ) )
   {
@@ -163,6 +163,7 @@ void MDAL::DriverManager::loadDatasets( Mesh *mesh, const std::string &datasetFi
          driver->canReadDatasets( datasetFile ) )
     {
       std::unique_ptr<Driver> drv( driver->create() );
+      drv->setLoadFlags( loadFlags );
       drv->load( datasetFile, mesh );
       return;
     }

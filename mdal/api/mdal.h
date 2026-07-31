@@ -414,6 +414,15 @@ MDAL_EXPORT int MDAL_M_faceVerticesMaximumCount( MDAL_MeshH mesh );
 MDAL_EXPORT void MDAL_M_LoadDatasets( MDAL_MeshH mesh, const char *datasetFile );
 
 /**
+ * Loads dataset file like MDAL_M_LoadDatasets, but with extra control over the
+ * loading process via \a flags (a bitwise-OR combination of \ref MDAL_LoadFlag),
+ * mirroring MDAL_LoadMeshWithFlags()
+ *
+ * \since MDAL 1.4.0
+ */
+MDAL_EXPORT void MDAL_M_LoadDatasetsWithFlags( MDAL_MeshH mesh, const char *datasetFile, int flags );
+
+/**
  * Returns number of metadata values
  *
  * \since MDAL 0.9.0

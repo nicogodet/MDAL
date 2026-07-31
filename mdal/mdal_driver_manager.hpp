@@ -37,7 +37,7 @@ namespace MDAL
                                     const std::string &meshFile,
                                     const std::string &meshName,
                                     int loadFlags ) const;
-      void loadDatasets( Mesh *mesh, const std::string &datasetFile ) const;
+      void loadDatasets( Mesh *mesh, const std::string &datasetFile, int loadFlags ) const;
 
       void save( Mesh *mesh, const std::string &uri ) const;
 

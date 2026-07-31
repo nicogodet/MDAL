@@ -401,6 +401,11 @@ int MDAL_M_faceVerticesMaximumCount( MDAL_MeshH mesh )
 
 void MDAL_M_LoadDatasets( MDAL_MeshH mesh, const char *datasetFile )
 {
+  MDAL_M_LoadDatasetsWithFlags( mesh, datasetFile, 0 );
+}
+
+void MDAL_M_LoadDatasetsWithFlags( MDAL_MeshH mesh, const char *datasetFile, int flags )
+{
   if ( !datasetFile )
   {
     MDAL::Log::error( MDAL_Status::Err_FileNotFound, "Dataset file is not valid (null)" );
@@ -415,8 +420,7 @@ void MDAL_M_LoadDatasets( MDAL_MeshH mesh, const char *datasetFile )
 
   MDAL::Mesh *m = static_cast< MDAL::Mesh * >( mesh );
 
-  std::string filename( datasetFile );
-  MDAL::DriverManager::instance().loadDatasets( m, datasetFile );
+  MDAL::DriverManager::instance().loadDatasets( m, datasetFile, flags );
 }
 
 int MDAL_M_metadataCount( MDAL_MeshH mesh )
