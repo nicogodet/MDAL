@@ -165,8 +165,35 @@ namespace MDAL
   Statistics calculateStatistics( std::shared_ptr<DatasetGroup> grp );
   Statistics calculateStatistics( DatasetGroup *grp );
 
+  //! Calculates approximate statistics for dataset group from a sample of
+  //! \a sampleCount evenly-spaced datasets (endpoints included). When
+  //! \a sampleCount is 0 or greater or equal to the dataset count, falls
+  //! back to the exact statistics computation. If a sampled dataset has no cached statistics
+  //! yet (e.g. loaded with MDAL_LF_SkipStatistics) they are computed on the
+  //! fly and cached on the dataset, so a later exact call benefits from them.
+  Statistics calculateStatisticsApprox( DatasetGroup *grp, size_t sampleCount );
+
   //! Calculates statistics for dataset
   Statistics calculateStatistics( std::shared_ptr<Dataset> dataset );
+  Statistics calculateStatistics( Dataset *dataset );
+
+  //! Returns the cached statistics, computing, caching and releasing the
+  //! lazily loaded values on first access
+  Statistics ensureStatistics( Dataset *dataset );
+  //! Group overload; the result is not cached while the group is in edit mode
+  //! so that datasets added later are taken into account
+  Statistics ensureStatistics( DatasetGroup *group );
+
+  //! Computes and stores statistics for \a target (raw or shared pointer to
+  //! a Dataset or DatasetGroup) unless loadFlags has MDAL_LF_SkipStatistics.
+  //! Drivers should use this in place of
+  //! `target->setStatistics( calculateStatistics( target ) )`.
+  template <typename T>
+  void setStatisticsIfRequired( const T &target, int loadFlags )
+  {
+    if ( target && !( loadFlags & MDAL_LF_SkipStatistics ) )
+      target->setStatistics( calculateStatistics( &*target ) );
+  }
 
   // mesh & datasets
   //! Adds bed elevatiom dataset group to mesh

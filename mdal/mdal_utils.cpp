@@ -652,15 +652,67 @@ MDAL::Statistics MDAL::calculateStatistics( DatasetGroup *grp )
   if ( !grp )
     return ret;
 
+  // note: isComputed is a property of the caches only, set by setStatistics()
   for ( std::shared_ptr<Dataset> &ds : grp->datasets )
+    combineStatistics( ret, ensureStatistics( ds.get() ) );
+  return ret;
+}
+
+MDAL::Statistics MDAL::ensureStatistics( Dataset *dataset )
+{
+  Statistics stats = dataset->statistics();
+  if ( !stats.isComputed )
   {
-    MDAL::Statistics dsStats = ds->statistics();
-    combineStatistics( ret, dsStats );
+    stats = calculateStatistics( dataset );
+    dataset->setStatistics( stats );
+    dataset->releaseLoadedData();
   }
+  return stats;
+}
+
+MDAL::Statistics MDAL::ensureStatistics( DatasetGroup *group )
+{
+  Statistics stats = group->statistics();
+  if ( !stats.isComputed )
+  {
+    stats = calculateStatistics( group );
+    if ( !group->isInEditMode() )
+      group->setStatistics( stats );
+  }
+  return stats;
+}
+
+MDAL::Statistics MDAL::calculateStatisticsApprox( DatasetGroup *grp, size_t sampleCount )
+{
+  if ( !grp )
+    return Statistics();
+
+  const size_t n = grp->datasets.size();
+  if ( sampleCount == 0 || sampleCount >= n )
+    return ensureStatistics( grp );
+
+  Statistics ret;
+  for ( size_t i = 0; i < sampleCount; ++i )
+  {
+    // evenly spaced, endpoints included; indices are strictly increasing since sampleCount < n
+    const size_t idx = ( sampleCount == 1 ) ? ( n - 1 ) / 2 : ( i * ( n - 1 ) ) / ( sampleCount - 1 );
+    combineStatistics( ret, ensureStatistics( grp->datasets[idx].get() ) );
+  }
+
+  // a sample without any valid value (e.g. domain dry at the sampled times)
+  // would be indistinguishable from an error: fall back to the exact range
+  if ( std::isnan( ret.minimum ) )
+    return ensureStatistics( grp );
+
   return ret;
 }
 
 MDAL::Statistics MDAL::calculateStatistics( std::shared_ptr<Dataset> dataset )
+{
+  return calculateStatistics( dataset.get() );
+}
+
+MDAL::Statistics MDAL::calculateStatistics( Dataset *dataset )
 {
   Statistics ret;
   if ( !dataset )
