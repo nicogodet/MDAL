@@ -654,46 +654,57 @@ MDAL::Statistics MDAL::calculateStatistics( DatasetGroup *grp )
     return ret;
 
   for ( std::shared_ptr<Dataset> &ds : grp->datasets )
-  {
-    MDAL::Statistics dsStats = ds->statistics();
-    if ( !dsStats.isComputed )
-    {
-      dsStats = calculateStatistics( ds );
-      ds->setStatistics( dsStats );
-    }
-    combineStatistics( ret, dsStats );
-  }
+    combineStatistics( ret, ensureStatistics( ds.get() ) );
   ret.isComputed = true;
   return ret;
 }
 
+MDAL::Statistics MDAL::ensureStatistics( Dataset *dataset )
+{
+  Statistics stats = dataset->statistics();
+  if ( !stats.isComputed )
+  {
+    stats = calculateStatistics( dataset );
+    dataset->setStatistics( stats );
+    dataset->releaseLoadedData();
+  }
+  return stats;
+}
+
+MDAL::Statistics MDAL::ensureStatistics( DatasetGroup *group )
+{
+  Statistics stats = group->statistics();
+  if ( !stats.isComputed )
+  {
+    stats = calculateStatistics( group );
+    if ( !group->isInEditMode() )
+      group->setStatistics( stats );
+  }
+  return stats;
+}
+
 MDAL::Statistics MDAL::calculateStatisticsApprox( DatasetGroup *grp, size_t sampleCount )
 {
-  Statistics ret;
   if ( !grp )
-    return ret;
+    return Statistics();
 
   const size_t n = grp->datasets.size();
   if ( sampleCount == 0 || sampleCount >= n )
-    return calculateStatistics( grp );
+    return ensureStatistics( grp );
 
-  size_t lastIdx = std::numeric_limits<size_t>::max();
+  Statistics ret;
   for ( size_t i = 0; i < sampleCount; ++i )
   {
-    const size_t idx = ( sampleCount == 1 ) ? 0 : ( i * ( n - 1 ) ) / ( sampleCount - 1 );
-    if ( idx == lastIdx )
-      continue;
-
-    std::shared_ptr<Dataset> ds = grp->datasets[idx];
-    MDAL::Statistics dsStats = ds->statistics();
-    if ( !dsStats.isComputed )
-    {
-      dsStats = calculateStatistics( ds );
-      ds->setStatistics( dsStats );
-    }
-    combineStatistics( ret, dsStats );
-    lastIdx = idx;
+    // evenly spaced, endpoints included; indices are strictly increasing since sampleCount < n
+    const size_t idx = ( sampleCount == 1 ) ? ( n - 1 ) / 2 : ( i * ( n - 1 ) ) / ( sampleCount - 1 );
+    combineStatistics( ret, ensureStatistics( grp->datasets[idx].get() ) );
   }
+
+  // a sample without any valid value (e.g. domain dry at the sampled times)
+  // would be indistinguishable from an error: fall back to the exact range
+  if ( std::isnan( ret.minimum ) )
+    return ensureStatistics( grp );
+
   return ret;
 }
 

@@ -48,6 +48,10 @@ void MDAL::Dataset::setStatistics( const MDAL::Statistics &statistics )
   mStatistics.isComputed = true;
 }
 
+void MDAL::Dataset::releaseLoadedData()
+{
+}
+
 MDAL::DatasetGroup *MDAL::Dataset::group() const
 {
   return mParent;

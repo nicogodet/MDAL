@@ -944,11 +944,18 @@ void MDAL_G_minimumMaximum( MDAL_DatasetGroupH group, double *min, double *max )
   }
 
   MDAL::DatasetGroup *g = static_cast< MDAL::DatasetGroup * >( group );
-  MDAL::Statistics stats = g->statistics();
-  if ( !stats.isComputed )
+  MDAL::Statistics stats;
+  try
   {
-    stats = MDAL::calculateStatistics( g );
-    g->setStatistics( stats );
+    stats = MDAL::ensureStatistics( g );
+  }
+  catch ( MDAL::Error &err )
+  {
+    MDAL::Log::error( err );
+  }
+  catch ( MDAL_Status status )
+  {
+    MDAL::Log::error( status, "Failed to compute group statistics" );
   }
   *min = stats.minimum;
   *max = stats.maximum;
@@ -974,7 +981,19 @@ void MDAL_G_minimumMaximumApprox( MDAL_DatasetGroupH group, int sampleCount, dou
     sampleCount = 0;
 
   MDAL::DatasetGroup *g = static_cast< MDAL::DatasetGroup * >( group );
-  MDAL::Statistics stats = MDAL::calculateStatisticsApprox( g, static_cast<size_t>( sampleCount ) );
+  MDAL::Statistics stats;
+  try
+  {
+    stats = MDAL::calculateStatisticsApprox( g, static_cast<size_t>( sampleCount ) );
+  }
+  catch ( MDAL::Error &err )
+  {
+    MDAL::Log::error( err );
+  }
+  catch ( MDAL_Status status )
+  {
+    MDAL::Log::error( status, "Failed to compute approximate group statistics" );
+  }
   *min = stats.minimum;
   *max = stats.maximum;
 }
@@ -1441,11 +1460,18 @@ void MDAL_D_minimumMaximum( MDAL_DatasetH dataset, double *min, double *max )
   }
 
   MDAL::Dataset *ds = static_cast< MDAL::Dataset * >( dataset );
-  MDAL::Statistics stats = ds->statistics();
-  if ( !stats.isComputed )
+  MDAL::Statistics stats;
+  try
   {
-    stats = MDAL::calculateStatistics( ds );
-    ds->setStatistics( stats );
+    stats = MDAL::ensureStatistics( ds );
+  }
+  catch ( MDAL::Error &err )
+  {
+    MDAL::Log::error( err );
+  }
+  catch ( MDAL_Status status )
+  {
+    MDAL::Log::error( status, "Failed to compute dataset statistics" );
   }
   *min = stats.minimum;
   *max = stats.maximum;

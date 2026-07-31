@@ -177,6 +177,13 @@ namespace MDAL
   Statistics calculateStatistics( std::shared_ptr<Dataset> dataset );
   Statistics calculateStatistics( Dataset *dataset );
 
+  //! Returns the cached statistics, computing, caching and releasing the
+  //! lazily loaded values on first access
+  Statistics ensureStatistics( Dataset *dataset );
+  //! Group overload; the result is not cached while the group is in edit mode
+  //! so that datasets added later are taken into account
+  Statistics ensureStatistics( DatasetGroup *group );
+
   //! Sets stats unless loadFlags has MDAL_LF_SkipStatistics. Drivers should
   //! use this in place of `target->setStatistics( calculateStatistics(target) )`.
   void setStatisticsIfRequired( const std::shared_ptr<Dataset> &dataset, int loadFlags );
