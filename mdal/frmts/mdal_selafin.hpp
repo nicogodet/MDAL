@@ -55,6 +55,11 @@ namespace MDAL
       //! Add the dataset group to the file (persist), replace dataset in the new group by Selafindataset with lazy loading
       bool addDatasetGroup( DatasetGroup *datasetGroup );
 
+      //! Returns the IPOBO array read from the file (0 for interior nodes,
+      //! >0 for boundary nodes); empty for a partitioned file, whose record
+      //! holds KNOLG instead
+      std::vector<int> ipoboArray();
+
     private:
 
       //! Initializes and open the file file with the \a fileName
@@ -266,6 +271,9 @@ namespace MDAL
       BBox extent() const override;
 
       void closeSource() override;
+
+      //! Returns the IPOBO array stored in the source file (see SelafinFile::ipoboArray)
+      std::vector<int> ipoboArray() const { return mReader->ipoboArray(); }
 
     private:
       mutable bool mIsExtentUpToDate = false;
