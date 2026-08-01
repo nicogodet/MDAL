@@ -132,6 +132,10 @@ namespace MDAL
       int readInt( );
       size_t readSizeT( );
 
+      //! Reads \a len values from the current position into \a values, widening
+      //! them from float when the file is stored in single precision
+      void readDoubleValues( std::vector<double> &values, size_t len );
+
       void ignoreArrayLength( );
       std::string readStringWithoutLength( size_t len );
       void ignore( int len );

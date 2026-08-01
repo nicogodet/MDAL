@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 #include <stddef.h>
+#include <stdint.h>
+#include <string.h>
 #include <limits>
 #include <sstream>
 #include <fstream>
@@ -204,6 +206,87 @@ namespace MDAL
       std::reverse( p, p + sizeof( T ) );
 
     out.write( p, sizeof( T ) );
+  }
+
+  //! Reverses the byte order of a 32 bit value (compiles to a single bswap)
+  inline uint32_t swapBytes32( uint32_t v )
+  {
+    return ( v >> 24 ) | ( ( v >> 8 ) & 0x0000ff00u ) |
+           ( ( v << 8 ) & 0x00ff0000u ) | ( v << 24 );
+  }
+
+  //! Reverses the byte order of a 64 bit value (compiles to a single bswap)
+  inline uint64_t swapBytes64( uint64_t v )
+  {
+    return ( ( uint64_t )swapBytes32( ( uint32_t )v ) << 32 ) |
+           swapBytes32( ( uint32_t )( v >> 32 ) );
+  }
+
+  //! Reverses the byte order of \a count values in place, 4 or 8 bytes wide
+  template<typename T>
+  void swapBytesInPlace( T *values, size_t count )
+  {
+    static_assert( sizeof( T ) == 4 || sizeof( T ) == 8,
+                   "byte swapping is only defined for 4 and 8 byte values" );
+    // memcpy keeps this well defined for float/double; it compiles away
+    for ( size_t i = 0; i < count; ++i )
+    {
+      if constexpr( sizeof( T ) == 4 )
+      {
+        uint32_t bits;
+        memcpy( &bits, &values[i], 4 );
+        bits = swapBytes32( bits );
+        memcpy( &values[i], &bits, 4 );
+      }
+      else
+      {
+        uint64_t bits;
+        memcpy( &bits, &values[i], 8 );
+        bits = swapBytes64( bits );
+        memcpy( &values[i], &bits, 8 );
+      }
+    }
+  }
+
+  //! Reads \a count values in one go, swapping the byte order in place if needed
+  template<typename T>
+  bool readArray( T *values, size_t count, std::ifstream &in, bool changeEndianness = false )
+  {
+    if ( count == 0 )
+      return true;
+
+    if ( !in.read( reinterpret_cast<char *>( values ),
+                   static_cast<std::streamsize>( count * sizeof( T ) ) ) )
+      return false;
+
+    if ( changeEndianness )
+      swapBytesInPlace( values, count );
+
+    return true;
+  }
+
+  //! Writes \a count values, in chunks so that the scratch buffer stays bounded
+  template<typename T>
+  void writeArray( const T *values, size_t count, std::ofstream &out, bool changeEndianness = false )
+  {
+    if ( !changeEndianness )
+    {
+      out.write( reinterpret_cast<const char *>( values ),
+                 static_cast<std::streamsize>( count * sizeof( T ) ) );
+      return;
+    }
+
+    const size_t chunk = 128 * 1024 / sizeof( T );
+    std::vector<T> buffer;
+    buffer.reserve( std::min( count, chunk ) );
+    for ( size_t offset = 0; offset < count; offset += chunk )
+    {
+      const size_t n = std::min( chunk, count - offset );
+      buffer.assign( values + offset, values + offset + n );
+      swapBytesInPlace( buffer.data(), n );
+      out.write( reinterpret_cast<const char *>( buffer.data() ),
+                 static_cast<std::streamsize>( n * sizeof( T ) ) );
+    }
   }
 
   //! Prepend 0 to string to have n char
