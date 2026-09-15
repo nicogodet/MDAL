@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
+#include <limits>
 #include <cassert>
 #include <memory>
 #include <algorithm>
@@ -106,9 +108,11 @@ void MDAL::SelafinFile::parseMeshFrame()
       - if IPARAM (9) != 0: the value corresponds to the number of interface
       points (in parallel),
 
-      - if IPARAM(8) or IPARAM(9) != 0: the array IPOBO below is replaced
-      by the array KNOLG (total initial number of points). All the other
-      numbers are local to the sub-domain, including IKLE
+      - if IPARAM(9) != 0: the array IPOBO below is replaced by the array
+      KNOLG (total initial number of points). All the other numbers are local
+      to the sub-domain, including IKLE. (The manual reads "IPARAM(8) or
+      IPARAM(9)", but serial Telemac v7 and later write IPARAM(8) = NPTFR
+      next to a real IPOBO, see tests/data/slf/test_sd_7.slf)
   */
   mParameters = readIntArr( 10 );
   mXOrigin = static_cast<double>( mParameters[2] );
@@ -252,6 +256,44 @@ std::unique_ptr<MDAL::Mesh> MDAL::SelafinFile::createMesh( const std::string &fi
   populateDataset( mesh.get(), std::move( reader ) );
 
   return mesh;
+}
+
+std::vector<int> MDAL::SelafinFile::ipoboArray()
+{
+  if ( !mParsed )
+    parseFile();
+
+  // The record at this position holds KNOLG instead of IPOBO on a partitioned
+  // sub-domain file, that is when IPARAM(9) = NPTIR != 0. IPARAM(8) = NPTFR is
+  // also written by serial Telemac v7 and later, whose record IS a real IPOBO,
+  // so it must not disqualify the array.
+  if ( mParameters.size() < 9 || mParameters[8] != 0 )
+    return std::vector<int>();
+
+  std::vector<int> ipobo = readIntArr( mIPOBOStreamPosition, 0, mVerticesCount );
+
+  // Only a genuine boundary numbering can be reused: its non-zero entries must
+  // be exactly the permutation 1..NPTFR, and match IPARAM(8) when that one is
+  // set. This also rejects a KNOLG array on a file that leaves IPARAM(9) unset,
+  // the all-zero arrays written by older MDAL versions, and files whose IPOBO
+  // was written as something else entirely.
+  std::vector<int> numbering;
+  numbering.reserve( ipobo.size() );
+  for ( const int value : ipobo )
+    if ( value != 0 )
+      numbering.push_back( value );
+
+  if ( numbering.empty() )
+    return std::vector<int>();
+  if ( mParameters[7] != 0 && static_cast<size_t>( mParameters[7] ) != numbering.size() )
+    return std::vector<int>();
+
+  std::sort( numbering.begin(), numbering.end() );
+  for ( size_t i = 0; i < numbering.size(); ++i )
+    if ( numbering[i] != static_cast<int>( i + 1 ) )
+      return std::vector<int>();
+
+  return ipobo;
 }
 
 void MDAL::SelafinFile::populateDataset( MDAL::Mesh *mesh, const std::string &fileName )
@@ -526,9 +568,8 @@ int MDAL::SelafinFile::readInt( )
 {
   unsigned char data[4];
 
-  if ( mIn.read( reinterpret_cast< char * >( &data ), 4 ) )
-    if ( !mIn )
-      throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Unable to open stream for reading int" );
+  if ( !mIn.read( reinterpret_cast< char * >( &data ), 4 ) )
+    throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Unable to read int, stream failed" );
   if ( mChangeEndianness )
   {
     std::reverse( reinterpret_cast< char * >( &data ), reinterpret_cast< char * >( &data ) + 4 );
@@ -810,18 +851,33 @@ MDAL::MeshSelafinVertexIterator::MeshSelafinVertexIterator( std::shared_ptr<MDAL
 
 size_t MDAL::MeshSelafinVertexIterator::next( size_t vertexCount, double *coordinates )
 {
-  size_t count = std::min( vertexCount, mReader->verticesCount() - mPosition );
+  // The source file is read lazily here, through the C API, which has no
+  // exception handling: a file truncated or rewritten under an open handle
+  // must be reported as "nothing read", never let terminate the caller.
+  try
+  {
+    size_t count = std::min( vertexCount, mReader->verticesCount() - mPosition );
 
-  if ( count == 0 )
-    return 0;
+    if ( count == 0 )
+      return 0;
 
-  std::vector<double> coord = mReader->vertices( mPosition, count );
+    std::vector<double> coord = mReader->vertices( mPosition, count );
 
-  memcpy( coordinates, coord.data(), count * 24 );
+    memcpy( coordinates, coord.data(), count * 24 );
 
-  mPosition += count;
+    mPosition += count;
 
-  return count;
+    return count;
+  }
+  catch ( MDAL::Error &err )
+  {
+    MDAL::Log::error( err, "SELAFIN" );
+  }
+  catch ( MDAL_Status status )
+  {
+    MDAL::Log::error( status, "SELAFIN", "error occurred while reading vertices" );
+  }
+  return 0;
 }
 
 MDAL::MeshSelafinFaceIterator::MeshSelafinFaceIterator( std::shared_ptr<MDAL::SelafinFile> reader ):
@@ -832,39 +888,53 @@ size_t MDAL::MeshSelafinFaceIterator::next( size_t faceOffsetsBufferLen, int *fa
 {
   assert( faceOffsetsBuffer );
   assert( vertexIndicesBuffer );
-  assert( mReader->verticesPerFace() != 0 );
 
-  const size_t verticesPerFace = mReader->verticesPerFace();
-  size_t count = std::min( faceOffsetsBufferLen, mReader->facesCount() - mPosition );
-
-  count = std::min( count, vertexIndicesBufferLen / verticesPerFace );
-
-  if ( count == 0 )
-    return 0;
-
-  std::vector<int> indexes = mReader->connectivityIndex( mPosition * verticesPerFace, count * verticesPerFace );
-
-  if ( indexes.size() != count * verticesPerFace )
-    throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading faces" );
-
-  int vertexLocalIndex = 0;
-
-  for ( size_t i = 0; i < count; i++ )
+  // see MeshSelafinVertexIterator::next: reading here must not throw through
+  // the C API
+  try
   {
-    for ( size_t j = 0; j < verticesPerFace; ++j )
+    assert( mReader->verticesPerFace() != 0 );
+
+    const size_t verticesPerFace = mReader->verticesPerFace();
+    size_t count = std::min( faceOffsetsBufferLen, mReader->facesCount() - mPosition );
+
+    count = std::min( count, vertexIndicesBufferLen / verticesPerFace );
+
+    if ( count == 0 )
+      return 0;
+
+    std::vector<int> indexes = mReader->connectivityIndex( mPosition * verticesPerFace, count * verticesPerFace );
+
+    if ( indexes.size() != count * verticesPerFace )
+      throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading faces" );
+
+    int vertexLocalIndex = 0;
+
+    for ( size_t i = 0; i < count; i++ )
     {
-      if ( size_t( indexes[j + i * verticesPerFace] ) > mReader->verticesCount() )
-        throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading faces" );
-      vertexIndicesBuffer[vertexLocalIndex + j] = indexes[j + i * verticesPerFace] - 1;
+      for ( size_t j = 0; j < verticesPerFace; ++j )
+      {
+        if ( size_t( indexes[j + i * verticesPerFace] ) > mReader->verticesCount() )
+          throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading faces" );
+        vertexIndicesBuffer[vertexLocalIndex + j] = indexes[j + i * verticesPerFace] - 1;
+      }
+      vertexLocalIndex += MDAL::toInt( verticesPerFace );
+      faceOffsetsBuffer[i] = vertexLocalIndex;
     }
-    vertexLocalIndex += MDAL::toInt( verticesPerFace );
-    faceOffsetsBuffer[i] = vertexLocalIndex;
+
+    mPosition += count;
+
+    return count;
   }
-
-  mPosition += count;
-
-  return count;
-
+  catch ( MDAL::Error &err )
+  {
+    MDAL::Log::error( err, "SELAFIN" );
+  }
+  catch ( MDAL_Status status )
+  {
+    MDAL::Log::error( status, "SELAFIN", "error occurred while reading faces" );
+  }
+  return 0;
 }
 
 MDAL::DatasetSelafin::DatasetSelafin( MDAL::DatasetGroup *parent,
@@ -877,32 +947,60 @@ MDAL::DatasetSelafin::DatasetSelafin( MDAL::DatasetGroup *parent,
 
 size_t MDAL::DatasetSelafin::scalarData( size_t indexStart, size_t count, double *buffer )
 {
-  count = std::min( mReader->verticesCount() - indexStart, count );
-  std::vector<double> values = mReader->datasetValues( mTimeStepIndex, mXVariableIndex, indexStart, count );
-  if ( values.size() != count )
-    throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading dataset value" );
+  // see MeshSelafinVertexIterator::next: reading here must not throw through
+  // the C API
+  try
+  {
+    count = std::min( mReader->verticesCount() - indexStart, count );
+    std::vector<double> values = mReader->datasetValues( mTimeStepIndex, mXVariableIndex, indexStart, count );
+    if ( values.size() != count )
+      throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading dataset value" );
 
-  memcpy( buffer, values.data(), count * 8 );
+    memcpy( buffer, values.data(), count * 8 );
 
-  return count;
+    return count;
+  }
+  catch ( MDAL::Error &err )
+  {
+    MDAL::Log::error( err, "SELAFIN" );
+  }
+  catch ( MDAL_Status status )
+  {
+    MDAL::Log::error( status, "SELAFIN", "error occurred while reading dataset values" );
+  }
+  return 0;
 }
 
 size_t MDAL::DatasetSelafin::vectorData( size_t indexStart, size_t count, double *buffer )
 {
-  count = std::min( mReader->verticesCount() - indexStart, count );
-  std::vector<double> xValues = mReader->datasetValues( mTimeStepIndex, mXVariableIndex, indexStart, count );
-  std::vector<double> yValues = mReader->datasetValues( mTimeStepIndex, mYVariableIndex, indexStart, count );
-
-  if ( xValues.size() != count  || yValues.size() != count )
-    throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading dataset value" );
-
-  for ( size_t i = 0; i < count; ++i )
+  // see MeshSelafinVertexIterator::next: reading here must not throw through
+  // the C API
+  try
   {
-    buffer[2 * i] = xValues[i];
-    buffer[2 * i + 1] = yValues[i];
-  }
+    count = std::min( mReader->verticesCount() - indexStart, count );
+    std::vector<double> xValues = mReader->datasetValues( mTimeStepIndex, mXVariableIndex, indexStart, count );
+    std::vector<double> yValues = mReader->datasetValues( mTimeStepIndex, mYVariableIndex, indexStart, count );
 
-  return count;
+    if ( xValues.size() != count  || yValues.size() != count )
+      throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading dataset value" );
+
+    for ( size_t i = 0; i < count; ++i )
+    {
+      buffer[2 * i] = xValues[i];
+      buffer[2 * i + 1] = yValues[i];
+    }
+
+    return count;
+  }
+  catch ( MDAL::Error &err )
+  {
+    MDAL::Log::error( err, "SELAFIN" );
+  }
+  catch ( MDAL_Status status )
+  {
+    MDAL::Log::error( status, "SELAFIN", "error occurred while reading dataset values" );
+  }
+  return 0;
 }
 
 void MDAL::DatasetSelafin::setXVariableIndex( size_t index )
@@ -951,19 +1049,41 @@ static void writeValueArray( std::ofstream &file, const std::vector<T> &array )
     writeValue( file, value );
 }
 
-template<typename T>
-static void writeVertices( std::ofstream &file, MDAL::Mesh *mesh )
+// Reads the whole connectivity table of the mesh as 1-based indices (SELAFIN
+// convention).
+static void readConnectivity( MDAL::Mesh *mesh, size_t facesCount, size_t verticesPerFace,
+                              std::vector<int> &connectivity )
 {
-  std::unique_ptr<MDAL::MeshVertexIterator> vertexIter = mesh->readVertices();
-  size_t verticesCount = mesh->verticesCount();
-  std::vector<T> xValues( verticesCount );
-  std::vector<T> yValues( verticesCount );
+  connectivity.reserve( facesCount * verticesPerFace );
+  if ( facesCount == 0 )
+    return;
+  const int bufSize = BUFFER_SIZE;
+  std::vector<int> faceOffsetBuffer( bufSize );
+  std::vector<int> inkle( bufSize * verticesPerFace );
+  std::unique_ptr<MDAL::MeshFaceIterator> faceIter = mesh->readFaces();
   size_t count = 0;
-  size_t vertexIndex = 0;
-  size_t bufferSize = BUFFER_SIZE;
   do
   {
-    std::vector<double> coordinates( bufferSize * 3 );
+    count = faceIter->next( bufSize, faceOffsetBuffer.data(), bufSize * verticesPerFace, inkle.data() );
+    const size_t n = count * verticesPerFace;
+    for ( size_t i = 0; i < n; ++i )
+      connectivity.push_back( inkle[i] + 1 );  // SELAFIN is 1-based
+  }
+  while ( count != 0 );
+}
+
+static void readVerticesXY( MDAL::Mesh *mesh, std::vector<double> &xValues, std::vector<double> &yValues )
+{
+  const size_t verticesCount = mesh->verticesCount();
+  xValues.resize( verticesCount );
+  yValues.resize( verticesCount );
+  const size_t bufferSize = BUFFER_SIZE;
+  std::vector<double> coordinates( bufferSize * 3 );
+  std::unique_ptr<MDAL::MeshVertexIterator> vertexIter = mesh->readVertices();
+  size_t count = 0;
+  size_t vertexIndex = 0;
+  do
+  {
     count = vertexIter->next( bufferSize, coordinates.data() );
     for ( size_t i = 0; i < count; ++i )
     {
@@ -973,14 +1093,513 @@ static void writeVertices( std::ofstream &file, MDAL::Mesh *mesh )
     vertexIndex += count;
   }
   while ( count != 0 );
-  writeValueArrayRecord( file, xValues );
-  writeValueArrayRecord( file, yValues );
 }
 
-void MDAL::DriverSelafin::save( const std::string &fileName, const std::string &, MDAL::Mesh *mesh )
-{
-  std::ofstream file = MDAL::openOutputFile( fileName.c_str(), std::ofstream::binary );
+// Helpers for computeIPOBO. All operate on 1-based node ids: x[node-1] / y[node-1].
 
+// Shoelace signed area of an OPEN ring; > 0 means counter-clockwise (CCW).
+// The terms are computed relative to the first node of the ring. The shoelace
+// is translation invariant, but on projected coordinates (Lambert-93, UTM) the
+// raw products x*y reach 5e12, whose ulp is about 1e-3, so the sum loses the
+// sign of any contour smaller than a few square millimetres. Relative to a
+// local origin the terms stay at the size of the contour itself.
+static double ipoboSignedArea( const std::vector<int> &ring,
+                               const std::vector<double> &x,
+                               const std::vector<double> &y )
+{
+  const size_t n = ring.size();
+  if ( n == 0 )
+    return 0.0;
+  const double x0 = x[ring[0] - 1];
+  const double y0 = y[ring[0] - 1];
+  double area = 0.0;
+  for ( size_t i = 0; i < n; ++i )
+  {
+    const int a = ring[i];
+    const int b = ring[( i + 1 ) % n];
+    area += ( x[a - 1] - x0 ) * ( y[b - 1] - y0 ) - ( x[b - 1] - x0 ) * ( y[a - 1] - y0 );
+  }
+  return 0.5 * area;
+}
+
+// Ray-casting point-in-polygon over an OPEN ring.
+static bool ipoboPointInPolygon( double px, double py,
+                                 const std::vector<int> &ring,
+                                 const std::vector<double> &x,
+                                 const std::vector<double> &y )
+{
+  bool inside = false;
+  const size_t n = ring.size();
+  size_t j = n - 1;
+  for ( size_t i = 0; i < n; ++i )
+  {
+    const double pxi = x[ring[i] - 1];
+    const double pyi = y[ring[i] - 1];
+    const double pxj = x[ring[j] - 1];
+    const double pyj = y[ring[j] - 1];
+    // the straddle test guarantees pyi != pyj, so the division is safe
+    if ( ( ( pyi > py ) != ( pyj > py ) ) &&
+         ( px < ( pxj - pxi ) * ( py - pyi ) / ( pyj - pyi ) + pxi ) )
+      inside = !inside;
+    j = i;
+  }
+  return inside;
+}
+
+// True when (px,py) lies exactly on a vertex or an edge of the OPEN ring.
+// The cross product is compared to zero exactly, on purpose: what has to be
+// caught here is a node of another contour placed at the very same coordinates
+// (zero-width weirs, a bank digitised twice), which come from the same array
+// and are therefore bit-identical, making the cross product exactly 0. A
+// tolerance would have to be relative to the edge length, and would start
+// treating nodes that merely run close to another contour as lying on it,
+// which changes the probe point chosen on a perfectly well defined mesh. The
+// case left out is a node sitting in the middle of another contour's edge
+// without sharing any of its nodes.
+static bool ipoboPointOnRing( double px, double py,
+                              const std::vector<int> &ring,
+                              const std::vector<double> &x,
+                              const std::vector<double> &y )
+{
+  const size_t n = ring.size();
+  for ( size_t i = 0; i < n; ++i )
+  {
+    const double ax = x[ring[i] - 1];
+    const double ay = y[ring[i] - 1];
+    const double bx = x[ring[( i + 1 ) % n] - 1];
+    const double by = y[ring[( i + 1 ) % n] - 1];
+    const double cross = ( bx - ax ) * ( py - ay ) - ( by - ay ) * ( px - ax );
+    if ( cross != 0.0 )
+      continue;
+    const double dot = ( px - ax ) * ( bx - ax ) + ( py - ay ) * ( by - ay );
+    if ( dot < 0.0 )
+      continue;
+    if ( dot <= ( bx - ax ) * ( bx - ax ) + ( by - ay ) * ( by - ay ) )
+      return true;
+  }
+  return false;
+}
+
+// First node of ringI that does not lie on ringJ, usable as a
+// point-in-polygon probe. Superimposed boundary nodes (e.g. zero-width
+// weirs) can place ringI's start exactly ON ringJ, where ray casting is
+// ill-defined. Returns -1 when every node of ringI lies on ringJ.
+static int ipoboRepresentative( const std::vector<int> &ringI,
+                                const std::vector<int> &ringJ,
+                                const std::vector<double> &x,
+                                const std::vector<double> &y )
+{
+  for ( const int node : ringI )
+    if ( !ipoboPointOnRing( x[node - 1], y[node - 1], ringJ, x, y ) )
+      return node;
+  return -1;
+}
+
+// Walk one closed loop from `start`, consuming edges from `neighbours`.
+// Returns the closed loop [start, ..., start] in `loopOut` and true on
+// success; false on a dead end or if `maxSteps` is exceeded.
+static bool ipoboWalkOneLoop( std::map<int, std::set<int>> &neighbours,
+                              int start,
+                              size_t maxSteps,
+                              std::vector<int> &loopOut )
+{
+  loopOut.clear();
+  auto eraseEdge = [&neighbours]( int a, int b )
+  {
+    auto it = neighbours.find( a );
+    if ( it != neighbours.end() )
+    {
+      it->second.erase( b );
+      if ( it->second.empty() )
+        neighbours.erase( it );
+    }
+  };
+
+  auto itStart = neighbours.find( start );
+  if ( itStart == neighbours.end() || itStart->second.empty() )
+    return false;
+
+  loopOut.push_back( start );
+  int nxt = *itStart->second.begin();
+  eraseEdge( start, nxt );
+  eraseEdge( nxt, start );
+
+  size_t steps = 0;
+  while ( nxt != start )
+  {
+    loopOut.push_back( nxt );
+    if ( ++steps > maxSteps )
+      return false;
+    auto it = neighbours.find( nxt );
+    if ( it == neighbours.end() || it->second.empty() )
+      return false;  // dead end
+    const int newNxt = *it->second.begin();
+    eraseEdge( nxt, newNxt );
+    eraseEdge( newNxt, nxt );
+    nxt = newNxt;
+  }
+  loopOut.push_back( start );  // close the ring
+  return true;
+}
+
+// Iterative DFS over the containment forest; children[] must already be
+// sorted in the desired visit order.
+static void ipoboDfs( int root,
+                      const std::vector<std::vector<int>> &children,
+                      std::vector<int> &orderOut )
+{
+  std::vector<int> stack( 1, root );
+  while ( !stack.empty() )
+  {
+    const int node = stack.back();
+    stack.pop_back();
+    orderOut.push_back( node );
+    // push in reverse so children pop in ascending key order
+    for ( auto it = children[node].rbegin(); it != children[node].rend(); ++it )
+      stack.push_back( *it );
+  }
+}
+
+// Error thrown when the boundary numbering cannot be computed. Node ids in the
+// message are the 1-based ones of the SELAFIN connectivity.
+static MDAL::Error ipoboError( const std::string &reason )
+{
+  return MDAL::Error( MDAL_Status::Err_IncompatibleMesh,
+                      "Unable to build the IPOBO boundary numbering: " + reason );
+}
+
+// Computes the IPOBO array from the mesh connectivity and vertex coordinates:
+//   IPOBO[i] = 0 for interior nodes,
+//   IPOBO[i] = N (consecutive, starting at 1) for boundary nodes.
+//
+// Boundary extraction and contour nesting follow the approach of opentelemac's
+// pretel/extract_contour.py: boundary edges are the edges used by exactly one
+// face, each contour is walked from its south-west node, external contours are
+// oriented CCW and holes CW. The consecutive IPOBO numbering itself — depth
+// parity for arbitrarily nested contours, containment forest and DFS emission
+// order — is original to MDAL. The numbering is checked against the arrays
+// stored by Janet, Telemac-2D, Fudaa-Prepro and the Malpasset reference file
+// by the IPOBOMatchesTelemacFiles test; those files all have a single contour,
+// so the ordering of several contours is MDAL's own convention, described in
+// docs/source/drivers/selafin.rst.
+//
+// Connectivity indices are 1-based (SELAFIN convention); MDAL writes 2D only.
+// Returns a 0-indexed vector sized like x, all zeros for a mesh without faces
+// or without any boundary. Throws Err_IncompatibleMesh when the mesh has a
+// boundary that cannot be numbered: a file carrying a wrong or empty IPOBO is
+// unusable for Telemac, so the save is refused instead.
+static std::vector<int> computeIPOBO(
+  const std::vector<int> &connectivity,  // 1-based vertex indices
+  const std::vector<double> &x,
+  const std::vector<double> &y,
+  size_t verticesPerFace )
+{
+  const size_t verticesCount = x.size();
+
+  std::vector<int> ipobo( verticesCount, 0 );
+
+  // --- Pre-validation: triangles only, well-formed 1-based connectivity ---
+  // computeIPOBO is a free-standing helper; guard against malformed input so
+  // x[node-1] / ipobo[node-1] can never read or write out of bounds.
+  if ( connectivity.empty() )
+    return ipobo;  // no faces — no boundary to build (zeros, no error)
+  if ( verticesPerFace != 3 )
+    throw ipoboError( "Selafin 2D meshes are made of triangles only" );
+  if ( connectivity.size() % verticesPerFace != 0 || x.size() != y.size() )
+    throw ipoboError( "connectivity table and coordinate arrays have inconsistent sizes" );
+  for ( const int node : connectivity )
+    if ( node < 1 || static_cast<size_t>( node ) > verticesCount )
+      throw ipoboError( "vertex index " + std::to_string( node ) + " is out of range" );
+
+  const size_t facesCount = connectivity.size() / verticesPerFace;
+
+  // --- Canonical edges: sorted packed (min,max) keys ---
+  std::vector<long long> edges;
+  edges.reserve( connectivity.size() );
+  for ( size_t f = 0; f < facesCount; ++f )
+  {
+    for ( size_t v = 0; v < verticesPerFace; ++v )
+    {
+      const long long a = connectivity[f * verticesPerFace + v];
+      const long long b = connectivity[f * verticesPerFace + ( v + 1 ) % verticesPerFace];
+      edges.push_back( ( std::min( a, b ) << 32 ) | std::max( a, b ) );
+    }
+  }
+  std::sort( edges.begin(), edges.end() );
+
+  // --- Boundary adjacency (edges used by exactly one face) ---
+  // Ordered map + ordered set: deterministic SW start and *begin() walk choice.
+  std::map<int, std::set<int>> neighbours;
+  size_t boundaryEdgeCount = 0;
+  for ( size_t i = 0; i < edges.size(); )
+  {
+    size_t j = i + 1;
+    while ( j < edges.size() && edges[j] == edges[i] )
+      ++j;
+    const int a = static_cast<int>( edges[i] >> 32 );
+    const int b = static_cast<int>( edges[i] & 0xffffffffLL );
+    if ( j - i == 1 )
+    {
+      neighbours[a].insert( b );
+      neighbours[b].insert( a );
+      ++boundaryEdgeCount;
+    }
+    else if ( j - i > 2 )
+    {
+      // an edge shared by more than two faces is not a boundary edge and not
+      // an interior one either: the boundary would be silently wrong
+      throw ipoboError( "edge " + std::to_string( a ) + "-" + std::to_string( b ) +
+                        " is shared by " + std::to_string( j - i ) + " faces, 2 at most are allowed" );
+    }
+    i = j;
+  }
+
+  if ( neighbours.empty() )
+    return ipobo;  // closed surface / no boundary — zeros, NO warning
+
+  // Manifold invariant: every boundary node must have degree exactly 2, so the
+  // boundary decomposes into disjoint simple cycles and the edge-consuming walk
+  // can never close a wrong sub-loop. Pinch points break this invariant and are
+  // deliberately rejected rather than risk a mis-traced boundary.
+  for ( const auto &kv : neighbours )
+    if ( kv.second.size() != 2 )
+      throw ipoboError( "boundary node " + std::to_string( kv.first ) + " is the end of " +
+                        std::to_string( kv.second.size() ) + " boundary edges instead of 2 (pinch point)" );
+
+  // --- Trace every closed boundary loop (consumes `neighbours`) ---
+  // Every contour starts at its south-west node: minimum (x+y), ties broken by
+  // the smallest node id. Sorting the boundary nodes by that key once and
+  // walking the list in order picks the same node as a rescan of `neighbours`
+  // for every contour, in O(B log B) instead of O(contours * B).
+  std::vector<int> southwestOrder;
+  southwestOrder.reserve( neighbours.size() );
+  for ( const auto &kv : neighbours )
+    southwestOrder.push_back( kv.first );
+  std::sort( southwestOrder.begin(), southwestOrder.end(), [&x, &y]( int a, int b )
+  {
+    const double ka = x[a - 1] + y[a - 1];
+    const double kb = x[b - 1] + y[b - 1];
+    if ( ka != kb )
+      return ka < kb;
+    return a < b;
+  } );
+  size_t southwestPos = 0;
+
+  const size_t maxSteps = boundaryEdgeCount + 1;
+  std::vector<std::vector<int>> loops;  // each CLOSED [start..start]
+  while ( !neighbours.empty() )
+  {
+    while ( southwestPos < southwestOrder.size() &&
+            neighbours.find( southwestOrder[southwestPos] ) == neighbours.end() )
+      ++southwestPos;
+    if ( southwestPos == southwestOrder.size() )  // unreachable: `neighbours` is not empty
+      throw ipoboError( "the boundary contours could not be enumerated" );
+    const int start = southwestOrder[southwestPos];
+    std::vector<int> loop;
+    if ( !ipoboWalkOneLoop( neighbours, start, maxSteps, loop ) )
+      throw ipoboError( "the boundary contour starting at node " + std::to_string( start ) +
+                        " does not close" );
+    loops.push_back( std::move( loop ) );
+  }
+
+  const size_t nLoops = loops.size();
+
+  // --- Open rings (drop the closing duplicate) ---
+  // `rings` keep the WALK orientation and are never reversed, so rings[i][0] is
+  // always the south-west start node — the point-in-polygon probe base for the
+  // depth and parent tests, and the south-west key of the DFS ordering.
+  // (Orientation reverses the CLOSED loops[] used only for numbering, which
+  // keeps loops[i][0] == rings[i][0].)
+  std::vector<std::vector<int>> rings( nLoops );
+  for ( size_t i = 0; i < nLoops; ++i )
+    rings[i].assign( loops[i].begin(), loops[i].end() - 1 );
+
+  // Ring bounding boxes. Boundary contours of a manifold mesh never cross, so a
+  // contour lies inside another one only if its bounding box does too: four
+  // comparisons reject most pairs before any point-in-polygon work. Contours
+  // that are fully superimposed, the case ipoboRepresentative rejects, always
+  // pass the test, so no error can slip through the prefilter.
+  struct IpoboBBox
+  {
+    double minX, maxX, minY, maxY;
+  };
+  std::vector<IpoboBBox> bbox( nLoops );
+  for ( size_t i = 0; i < nLoops; ++i )
+  {
+    IpoboBBox b { std::numeric_limits<double>::max(), std::numeric_limits<double>::lowest(),
+                  std::numeric_limits<double>::max(), std::numeric_limits<double>::lowest() };
+    for ( const int node : rings[i] )
+    {
+      b.minX = std::min( b.minX, x[node - 1] );
+      b.maxX = std::max( b.maxX, x[node - 1] );
+      b.minY = std::min( b.minY, y[node - 1] );
+      b.maxY = std::max( b.maxY, y[node - 1] );
+    }
+    bbox[i] = b;
+  }
+  auto bboxInside = [&bbox]( size_t i, size_t j )
+  {
+    return bbox[i].minX >= bbox[j].minX && bbox[i].maxX <= bbox[j].maxX &&
+           bbox[i].minY >= bbox[j].minY && bbox[i].maxY <= bbox[j].maxY;
+  };
+
+  // --- Nesting depth via point-in-polygon (before any orientation) ---
+  // insideOf[i] collects, in ascending index order, every contour that encloses
+  // contour i, so that the containment forest below needs no second pass.
+  std::vector<int> depth( nLoops, 0 );
+  std::vector<std::vector<int>> insideOf( nLoops );
+  for ( size_t i = 0; i < nLoops; ++i )
+  {
+    for ( size_t j = 0; j < nLoops; ++j )
+    {
+      if ( i == j || !bboxInside( i, j ) )
+        continue;
+      const int rep = ipoboRepresentative( rings[i], rings[j], x, y );
+      if ( rep < 0 )
+        throw ipoboError( "the contours starting at nodes " + std::to_string( rings[i][0] ) +
+                          " and " + std::to_string( rings[j][0] ) + " are fully superimposed" );
+      if ( ipoboPointInPolygon( x[rep - 1], y[rep - 1], rings[j], x, y ) )
+      {
+        ++depth[i];
+        insideOf[i].push_back( static_cast<int>( j ) );
+      }
+    }
+  }
+
+  // --- Orient by depth parity (even = external = CCW; odd = island = CW) ---
+  // Reverse the CLOSED loops[i] (numbering direction only); rings[] stay frozen.
+  for ( size_t i = 0; i < nLoops; ++i )
+  {
+    if ( loops[i].size() <= 3 )
+      continue;  // unreachable: the degree-2 check makes the minimum cycle 3 nodes (closed size 4); kept as guard
+    const bool ccw = ipoboSignedArea( rings[i], x, y ) > 0.0;
+    const bool even = ( depth[i] % 2 == 0 );
+    if ( ( even && !ccw ) || ( !even && ccw ) )
+      std::reverse( loops[i].begin(), loops[i].end() );
+  }
+
+  // --- Containment forest (parent = deepest enclosing loop) ---
+  // Tie-break: first j in ascending index order at the max qualifying depth.
+  std::vector<std::vector<int>> children( nLoops );
+  for ( size_t i = 0; i < nLoops; ++i )
+  {
+    if ( depth[i] == 0 )
+      continue;
+    int bestParent = -1;
+    int bestDepth = -1;
+    for ( const int j : insideOf[i] )
+    {
+      if ( depth[j] >= depth[i] || depth[j] <= bestDepth )
+        continue;
+      bestDepth = depth[j];
+      bestParent = j;
+    }
+    if ( bestParent >= 0 )
+      children[bestParent].push_back( static_cast<int>( i ) );
+  }
+
+  // --- DFS order; roots (depth 0) and children sorted by SW key ---
+  auto lessByKey = [&rings, &x, &y]( int a, int b )
+  {
+    const int na = rings[a][0];
+    const int nb = rings[b][0];
+    const double ka = x[na - 1] + y[na - 1];
+    const double kb = x[nb - 1] + y[nb - 1];
+    if ( ka != kb )
+      return ka < kb;
+    return na < nb;
+  };
+
+  std::vector<int> roots;
+  for ( size_t i = 0; i < nLoops; ++i )
+    if ( depth[i] == 0 )
+      roots.push_back( static_cast<int>( i ) );
+  std::sort( roots.begin(), roots.end(), lessByKey );
+  for ( auto &kids : children )
+    std::sort( kids.begin(), kids.end(), lessByKey );
+
+  std::vector<int> order;
+  order.reserve( nLoops );
+  for ( const int r : roots )
+    ipoboDfs( r, children, order );
+
+  // every loop must be reachable through the forest; a loop with depth > 0 but
+  // no qualifying parent would otherwise be silently left unnumbered
+  if ( order.size() != nLoops )
+  {
+    std::vector<bool> numbered( nLoops, false );
+    for ( const int idx : order )
+      numbered[idx] = true;
+    size_t orphan = 0;
+    while ( orphan < nLoops && numbered[orphan] )
+      ++orphan;
+    throw ipoboError( "the contour starting at node " + std::to_string( rings[orphan][0] ) +
+                      " could not be placed in the contour nesting" );
+  }
+
+  // --- Consecutive 1-based numbering in traversal order ---
+  // Yield each oriented loop without its closing duplicate (loops[idx][:-1]).
+  int id = 0;
+  for ( const int idx : order )
+    for ( size_t k = 0; k + 1 < loops[idx].size(); ++k )
+      ipobo[loops[idx][k] - 1] = ++id;
+
+  return ipobo;
+}
+
+// Everything that has to be READ from the mesh before the output file is
+// opened: a MeshSelafin reads its frame and its IPOBO lazily from its own
+// source file, which may be the file about to be written.
+struct SelafinMeshFrame
+{
+  size_t verticesCount = 0;
+  size_t facesCount = 0;
+  size_t verticesPerFace = 0;
+  std::vector<int> connectivity;  // 1-based
+  std::vector<double> x;
+  std::vector<double> y;
+  std::vector<int> ipobo;
+};
+
+static SelafinMeshFrame collectMeshFrame( MDAL::Mesh *mesh )
+{
+  SelafinMeshFrame frame;
+  frame.verticesPerFace = mesh->faceVerticesMaximumCount();
+  frame.verticesCount = mesh->verticesCount();
+  frame.facesCount = mesh->facesCount();
+
+  // Reuse the IPOBO from disk when saving a MeshSelafin: its frame cannot be
+  // modified through MDAL (Mesh::addVertices/addFaces are no-ops on
+  // non-editable meshes), so the source topology always matches. ipoboArray()
+  // returns an empty array unless the stored one is a genuine boundary
+  // numbering, and an unreadable record simply falls back to the compute path.
+  std::vector<int> cachedIpobo;
+  if ( auto *meshSlf = dynamic_cast<MDAL::MeshSelafin *>( mesh ) )
+  {
+    try
+    {
+      cachedIpobo = meshSlf->ipoboArray();
+    }
+    catch ( MDAL::Error & )
+    {
+      cachedIpobo.clear();
+    }
+  }
+  const bool cachedUsable = cachedIpobo.size() == frame.verticesCount;
+
+  readConnectivity( mesh, frame.facesCount, frame.verticesPerFace, frame.connectivity );
+  readVerticesXY( mesh, frame.x, frame.y );
+
+  if ( cachedUsable )
+    frame.ipobo = std::move( cachedIpobo );
+  else
+    frame.ipobo = computeIPOBO( frame.connectivity, frame.x, frame.y, frame.verticesPerFace );
+
+  return frame;
+}
+
+static void writeMeshFrame( std::ofstream &file, const SelafinMeshFrame &frame )
+{
   std::string header( "Selafin file created by MDAL library" );
   std::string remainingStr( 72 - header.size(), ' ' );
   header.append( remainingStr );
@@ -1001,45 +1620,133 @@ void MDAL::DriverSelafin::save( const std::string &fileName, const std::string &
   writeValueArrayRecord( file, param );
 
   //NELEM,NPOIN,NDP,1
-  size_t verticesPerFace = mesh->faceVerticesMaximumCount();
-  size_t verticesCount = mesh->verticesCount();
-  size_t facesCount = mesh->facesCount();
   std::vector<int> elem( 4 );
-  elem[0] = MDAL::toInt( facesCount );
-  elem[1] = MDAL::toInt( verticesCount );
-  elem[2] = MDAL::toInt( verticesPerFace );
+  elem[0] = MDAL::toInt( frame.facesCount );
+  elem[1] = MDAL::toInt( frame.verticesCount );
+  elem[2] = MDAL::toInt( frame.verticesPerFace );
   elem[3] = 1;
   writeValueArrayRecord( file, elem );
 
-  //connectivity table
-  int bufferSize = BUFFER_SIZE;
-  std::vector<int> faceOffsetBuffer( bufferSize );
-  std::unique_ptr<MeshFaceIterator> faceIter = mesh->readFaces();
-  size_t count = 0;
-  writeInt( file, MDAL::toInt( facesCount * verticesPerFace * 4 ) );
-  if ( facesCount > 0 )
+  writeValueArrayRecord( file, frame.connectivity );
+  writeValueArrayRecord( file, frame.ipobo );
+  writeValueArrayRecord( file, frame.x );
+  writeValueArrayRecord( file, frame.y );
+}
+
+// Replaces `target` with the content of `tmp` as safely as the platform allows.
+// Returns true on success; the temporary file is then gone.
+//
+// std::rename() replaces the target atomically on POSIX, so it is tried first;
+// MSVC's _wrename fails when the destination exists, hence the fallback to
+// removing the target first and, when it cannot be removed because another
+// handle holds it open (the QGIS provider keeps its own MDAL handle on the
+// layer file while the layer is saved), to rewriting its content in place.
+//
+// On failure `error` describes the problem and the temporary file is removed,
+// unless it holds the only copy of the new content because the target has
+// already been removed or truncated; `error` then names the file kept on disk.
+static bool replaceFile( const std::string &tmp, const std::string &target, std::string &error )
+{
+  if ( MDAL::renameFile( tmp, target ) )
+    return true;
+
+  if ( MDAL::fileExists( target ) && MDAL::deleteFile( target ) )
   {
-    do
-    {
-      std::vector<int> inkle( bufferSize * verticesPerFace );
-      count = faceIter->next( bufferSize, faceOffsetBuffer.data(), bufferSize * verticesPerFace, inkle.data() );
-      inkle.resize( count * verticesPerFace );
-      for ( size_t i = 0; i < inkle.size(); ++i )
-        inkle[i]++;
-
-      writeValueArray( file, inkle );
-    }
-    while ( count != 0 );
+    if ( MDAL::renameFile( tmp, target ) )
+      return true;
+    error = "Unable to write file " + target + ", new content kept as " + tmp;
+    return false;
   }
-  writeInt( file, MDAL::toInt( facesCount * verticesPerFace * 4 ) );
 
-  // IPOBO filled with 0
-  writeValueArrayRecord( file, std::vector<int>( verticesCount, 0 ) );
+  // Open the source before truncating the target, so that a failure here
+  // leaves the target intact.
+  std::ifstream source = MDAL::openInputFile( tmp, std::ios_base::in | std::ios_base::binary );
+  if ( !source.is_open() )
+  {
+    error = "Unable to read file " + tmp;
+    MDAL::deleteFile( tmp );
+    return false;
+  }
+  std::ofstream destination = MDAL::openOutputFile( target, std::ofstream::binary );
+  if ( !destination.is_open() )
+  {
+    error = "Unable to replace file " + target;
+    source.close();  // Windows refuses to delete a file that is still open
+    MDAL::deleteFile( tmp );
+    return false;
+  }
 
-  //Vertices
-  writeVertices<double>( file, mesh );
+  const size_t copyBufferSize = 65536;
+  std::vector<char> buffer( copyBufferSize );
+  while ( source.read( buffer.data(), copyBufferSize ) || source.gcount() > 0 )
+    destination.write( buffer.data(), source.gcount() );
+  destination.flush();
+  const bool copied = destination.good() && !source.bad();
+  destination.close();
+  source.close();  // Windows refuses to delete a file that is still open
+  if ( !copied || destination.fail() )
+  {
+    error = "Unable to replace file " + target + ", new content kept as " + tmp;
+    return false;
+  }
 
-  file.close();
+  MDAL::deleteFile( tmp );
+  return true;
+}
+
+void MDAL::DriverSelafin::save( const std::string &fileName, const std::string &, MDAL::Mesh *mesh )
+{
+  // Write to a temporary file first: a MeshSelafin's frame and IPOBO are read
+  // lazily from the source file during the save, which may be fileName itself.
+  const std::string tempFileName = fileName + ".tmp";
+  // replaceFile() takes the temporary file over: once it has run, the catch
+  // blocks below must not remove it, it may hold the only copy of the mesh.
+  bool ownTempFile = true;
+
+  try
+  {
+    // Read everything from the mesh BEFORE the output file is opened.
+    const SelafinMeshFrame frame = collectMeshFrame( mesh );
+
+    std::ofstream file = MDAL::openOutputFile( tempFileName, std::ofstream::binary );
+    if ( !file.is_open() )
+      throw MDAL::Error( MDAL_Status::Err_FailToWriteToDisk, "Could not open file " + tempFileName );
+
+    writeMeshFrame( file, frame );
+    file.flush();
+    const bool written = file.good();
+    file.close();
+    // a full disk must fail the save here instead of replacing the target with
+    // a truncated file
+    if ( !written || file.fail() )
+      throw MDAL::Error( MDAL_Status::Err_FailToWriteToDisk, "Could not write file " + tempFileName );
+
+    std::string error;
+    ownTempFile = false;
+    if ( !replaceFile( tempFileName, fileName, error ) )
+      throw MDAL::Error( MDAL_Status::Err_FailToWriteToDisk, error );
+
+    // A MeshSelafin saved onto its own source now reads a file that no longer
+    // holds its datasets: release it so that the next access re-parses the
+    // file that has just been written. Mesh::uri() is the raw file name passed
+    // to SelafinFile::createMesh and MDAL has no path normalisation, so the
+    // same file spelled differently is not detected here; the reader then goes
+    // on serving the pre-save content, which is consistent but stale.
+    if ( mesh->uri() == fileName )
+      mesh->closeSource();
+  }
+  catch ( MDAL::Error &err )
+  {
+    if ( ownTempFile )
+      MDAL::deleteFile( tempFileName );
+    MDAL::Log::error( err, name() );
+  }
+  catch ( MDAL_Status status )
+  {
+    if ( ownTempFile )
+      MDAL::deleteFile( tempFileName );
+    MDAL::Log::error( status, name(), "error occurred while saving mesh frame" );
+  }
 }
 
 std::string MDAL::DriverSelafin::writeDatasetOnFileSuffix() const
@@ -1283,18 +1990,24 @@ bool MDAL::SelafinFile::addDatasetGroup( MDAL::DatasetGroup *datasetGroup )
     }
   }
 
+  out.flush();
+  const bool written = out.good();
   out.close();
   mIn.close();
+  // a full disk must fail here instead of replacing the file with a truncated one
+  if ( !written || out.fail() )
+  {
+    MDAL::deleteFile( tempFileName );
+    throw MDAL::Error( MDAL_Status::Err_FailToWriteToDisk, "Unable to write dataset in file " + tempFileName );
+  }
 
   // if the uri of the dataset group is the same than the file name, be sure to close it before replace it
   if ( datasetGroup->uri() == mFileName )
     datasetGroup->mesh()->closeSource();
 
-  if ( !MDAL::deleteFile( mFileName ) || !MDAL::renameFile( tempFileName, mFileName ) )
-  {
-    MDAL::deleteFile( tempFileName );
-    throw MDAL::Error( MDAL_Status::Err_FailToWriteToDisk, "Unable to write dataset in file" );
-  }
+  std::string error;
+  if ( !replaceFile( tempFileName, mFileName, error ) )
+    throw MDAL::Error( MDAL_Status::Err_FailToWriteToDisk, error );
 
   parseFile();
 

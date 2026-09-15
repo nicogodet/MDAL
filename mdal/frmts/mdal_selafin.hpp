@@ -55,6 +55,12 @@ namespace MDAL
       //! Add the dataset group to the file (persist), replace dataset in the new group by Selafindataset with lazy loading
       bool addDatasetGroup( DatasetGroup *datasetGroup );
 
+      //! Returns the IPOBO array read from the file (0 for interior nodes,
+      //! >0 for boundary nodes). Empty unless the array is a genuine boundary
+      //! numbering, that is a permutation of 1..NPTFR on a file that is not a
+      //! partitioned sub-domain, whose record holds KNOLG instead
+      std::vector<int> ipoboArray();
+
     private:
 
       //! Initializes and open the file file with the \a fileName
@@ -267,6 +273,9 @@ namespace MDAL
 
       void closeSource() override;
 
+      //! Returns the IPOBO array stored in the source file (see SelafinFile::ipoboArray)
+      std::vector<int> ipoboArray() const { return mReader->ipoboArray(); }
+
     private:
       mutable bool mIsExtentUpToDate = false;
       mutable BBox mExtent;
@@ -296,8 +305,10 @@ namespace MDAL
    *        - if IPARAM (7): the value corresponds to the number of  planes on the vertical (3D computation),
    *        - if IPARAM (8)!=0: the value corresponds to the number of boundary points (in parallel),
    *        - if IPARAM (9)!=0: the value corresponds to the number of interface points (in parallel),
-   *        - if IPARAM(8 ) or IPARAM(9) !=0: the array IPOBO below is replaced by the array KNOLG(total initial number of points).
+   *        - if IPARAM(9) !=0: the array IPOBO below is replaced by the array KNOLG(total initial number of points).
    *            All the other numbers are local to the sub-domain, including IKLE.
+   *            (the manual reads "IPARAM(8) or IPARAM(9)", but serial Telemac v7 and later write
+   *            IPARAM(8) = NPTFR next to a real IPOBO, see tests/data/slf/test_sd_7.slf)
    *
    * - if IPARAM(10)= 1: a record containing the computation starting date,
    * - 1 record containing the integers NELEM,NPOIN,NDP,1(number of elements, number of points, number of points per element and the value 1),
