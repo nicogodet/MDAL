@@ -380,7 +380,9 @@ void MDAL_M_extent( MDAL_MeshH mesh, double *minX, double *maxX, double *minY, d
   else
   {
     MDAL::Mesh *m = static_cast< MDAL::Mesh * >( mesh );
-    const MDAL::BBox extent = m->extent();
+    const MDAL::BBox extent = callGuarded( "Failed to read the mesh extent",
+                                           MDAL::BBox( NODATA, NODATA, NODATA, NODATA ),
+                                           [m] { return m->extent(); } );
     *minX = extent.minX;
     *maxX = extent.maxX;
     *minY = extent.minY;
@@ -397,8 +399,8 @@ int MDAL_M_vertexCount( MDAL_MeshH mesh )
   }
 
   MDAL::Mesh *m = static_cast< MDAL::Mesh * >( mesh );
-  int len = static_cast<int>( m->verticesCount() );
-  return len;
+  return callGuarded( "Failed to read the mesh vertex count", 0,
+                      [m] { return static_cast<int>( m->verticesCount() ); } );
 }
 
 
@@ -411,8 +413,8 @@ int MDAL_M_edgeCount( MDAL_MeshH mesh )
   }
 
   MDAL::Mesh *m = static_cast< MDAL::Mesh * >( mesh );
-  int len = static_cast<int>( m->edgesCount() );
-  return len;
+  return callGuarded( "Failed to read the mesh edge count", 0,
+                      [m] { return static_cast<int>( m->edgesCount() ); } );
 }
 
 int MDAL_M_faceCount( MDAL_MeshH mesh )
@@ -423,8 +425,8 @@ int MDAL_M_faceCount( MDAL_MeshH mesh )
     return 0;
   }
   MDAL::Mesh *m = static_cast< MDAL::Mesh * >( mesh );
-  int len = static_cast<int>( m->facesCount() );
-  return len;
+  return callGuarded( "Failed to read the mesh face count", 0,
+                      [m] { return static_cast<int>( m->facesCount() ); } );
 }
 
 int MDAL_M_faceVerticesMaximumCount( MDAL_MeshH mesh )
@@ -701,9 +703,9 @@ int MDAL_VI_next( MDAL_MeshVertexIteratorH iterator, int verticesCount, double *
     return 0;
   }
   MDAL::MeshVertexIterator *it = static_cast< MDAL::MeshVertexIterator * >( iterator );
-  size_t size = static_cast<size_t>( verticesCount );
-  size_t ret = it->next( size, coordinates );
-  return static_cast<int>( ret );
+  const size_t size = static_cast<size_t>( verticesCount );
+  return callGuarded( "Failed to read the mesh vertices", 0,
+                      [it, size, coordinates] { return static_cast<int>( it->next( size, coordinates ) ); } );
 }
 
 void MDAL_VI_close( MDAL_MeshVertexIteratorH iterator )
@@ -749,9 +751,12 @@ int MDAL_EI_next( MDAL_MeshEdgeIteratorH iterator, int edgesCount, int *startVer
   }
 
   MDAL::MeshEdgeIterator *it = static_cast< MDAL::MeshEdgeIterator * >( iterator );
-  size_t size = static_cast<size_t>( edgesCount );
-  size_t ret = it->next( size, startVertexIndices, endVertexIndices );
-  return static_cast<int>( ret );
+  const size_t size = static_cast<size_t>( edgesCount );
+  return callGuarded( "Failed to read the mesh edges", 0,
+                      [it, size, startVertexIndices, endVertexIndices]
+  {
+    return static_cast<int>( it->next( size, startVertexIndices, endVertexIndices ) );
+  } );
 }
 
 void MDAL_EI_close( MDAL_MeshEdgeIteratorH iterator )
@@ -794,11 +799,14 @@ int MDAL_FI_next( MDAL_MeshFaceIteratorH iterator,
     return 0;
   }
   MDAL::MeshFaceIterator *it = static_cast< MDAL::MeshFaceIterator * >( iterator );
-  size_t ret = it->next( static_cast<size_t>( faceOffsetsBufferLen ),
-                         faceOffsetsBuffer,
-                         static_cast<size_t>( vertexIndicesBufferLen ),
-                         vertexIndicesBuffer );
-  return static_cast<int>( ret );
+  return callGuarded( "Failed to read the mesh faces", 0,
+                      [it, faceOffsetsBufferLen, faceOffsetsBuffer, vertexIndicesBufferLen, vertexIndicesBuffer]
+  {
+    return static_cast<int>( it->next( static_cast<size_t>( faceOffsetsBufferLen ),
+                                       faceOffsetsBuffer,
+                                       static_cast<size_t>( vertexIndicesBufferLen ),
+                                       vertexIndicesBuffer ) );
+  } );
 }
 
 
@@ -1433,34 +1441,30 @@ int MDAL_D_data( MDAL_DatasetH dataset, int indexStart, int count, MDAL_DataType
   }
 
   // Request data
-  size_t writtenValuesCount = 0;
-  switch ( dataType )
+  const size_t writtenValuesCount = callGuarded<size_t>( "Failed to read the dataset values", 0,
+                                    [d, dataType, indexStartSizeT, countSizeT, buffer]() -> size_t
   {
-    case MDAL_DataType::SCALAR_DOUBLE:
-      writtenValuesCount = d->scalarData( indexStartSizeT, countSizeT, static_cast<double *>( buffer ) );
-      break;
-    case MDAL_DataType::VECTOR_2D_DOUBLE:
-      writtenValuesCount = d->vectorData( indexStartSizeT, countSizeT, static_cast<double *>( buffer ) );
-      break;
-    case MDAL_DataType::ACTIVE_INTEGER:
-      writtenValuesCount = d->activeData( indexStartSizeT, countSizeT, static_cast<int *>( buffer ) );
-      break;
-    case MDAL_DataType::VERTICAL_LEVEL_COUNT_INTEGER:
-      writtenValuesCount = d->verticalLevelCountData( indexStartSizeT, countSizeT, static_cast<int *>( buffer ) );
-      break;
-    case MDAL_DataType::VERTICAL_LEVEL_DOUBLE:
-      writtenValuesCount = d->verticalLevelData( indexStartSizeT, countSizeT, static_cast<double *>( buffer ) );
-      break;
-    case MDAL_DataType::FACE_INDEX_TO_VOLUME_INDEX_INTEGER:
-      writtenValuesCount = d->faceToVolumeData( indexStartSizeT, countSizeT, static_cast<int *>( buffer ) );
-      break;
-    case MDAL_DataType::SCALAR_VOLUMES_DOUBLE:
-      writtenValuesCount = d->scalarVolumesData( indexStartSizeT, countSizeT, static_cast<double *>( buffer ) );
-      break;
-    case MDAL_DataType::VECTOR_2D_VOLUMES_DOUBLE:
-      writtenValuesCount = d->vectorVolumesData( indexStartSizeT, countSizeT, static_cast<double *>( buffer ) );
-      break;
-  }
+    switch ( dataType )
+    {
+      case MDAL_DataType::SCALAR_DOUBLE:
+        return d->scalarData( indexStartSizeT, countSizeT, static_cast<double *>( buffer ) );
+      case MDAL_DataType::VECTOR_2D_DOUBLE:
+        return d->vectorData( indexStartSizeT, countSizeT, static_cast<double *>( buffer ) );
+      case MDAL_DataType::ACTIVE_INTEGER:
+        return d->activeData( indexStartSizeT, countSizeT, static_cast<int *>( buffer ) );
+      case MDAL_DataType::VERTICAL_LEVEL_COUNT_INTEGER:
+        return d->verticalLevelCountData( indexStartSizeT, countSizeT, static_cast<int *>( buffer ) );
+      case MDAL_DataType::VERTICAL_LEVEL_DOUBLE:
+        return d->verticalLevelData( indexStartSizeT, countSizeT, static_cast<double *>( buffer ) );
+      case MDAL_DataType::FACE_INDEX_TO_VOLUME_INDEX_INTEGER:
+        return d->faceToVolumeData( indexStartSizeT, countSizeT, static_cast<int *>( buffer ) );
+      case MDAL_DataType::SCALAR_VOLUMES_DOUBLE:
+        return d->scalarVolumesData( indexStartSizeT, countSizeT, static_cast<double *>( buffer ) );
+      case MDAL_DataType::VECTOR_2D_VOLUMES_DOUBLE:
+        return d->vectorVolumesData( indexStartSizeT, countSizeT, static_cast<double *>( buffer ) );
+    }
+    return 0;
+  } );
 
   return static_cast<int>( writtenValuesCount );
 }
