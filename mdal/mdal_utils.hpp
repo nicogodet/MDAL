@@ -165,9 +165,22 @@ namespace MDAL
   Statistics calculateStatistics( std::shared_ptr<DatasetGroup> grp );
   Statistics calculateStatistics( DatasetGroup *grp );
 
-  //! Calculates statistics for dataset
+  //! Calculates statistics for dataset. A read that stops short of
+  //! valuesCount() is not reported: the returned range then only covers the
+  //! values that could be read. Use ensureStatistics() to cache a result.
   Statistics calculateStatistics( std::shared_ptr<Dataset> dataset );
   Statistics calculateStatistics( Dataset *dataset );
+
+  //! Returns the cached statistics, computing, caching and releasing the
+  //! lazily loaded values on first access. When the values cannot be read in
+  //! full, logs an error and returns NaN statistics without caching them, so
+  //! that a later call retries instead of serving a partial range forever.
+  Statistics ensureStatistics( Dataset *dataset );
+  //! Group overload; the result is not cached while the group is in edit mode
+  //! so that datasets added later are taken into account. When one of the
+  //! datasets could not be read in full, returns NaN statistics without
+  //! caching them, like the dataset overload.
+  Statistics ensureStatistics( DatasetGroup *group );
 
   //! Computes and stores statistics for \a target (raw or shared pointer to
   //! a Dataset or DatasetGroup) unless loadFlags has MDAL_LF_SkipStatistics.

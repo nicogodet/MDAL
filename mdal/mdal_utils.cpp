@@ -4,6 +4,7 @@
 */
 
 #include "mdal_utils.hpp"
+#include "mdal_logger.hpp"
 #include <string>
 #include <fstream>
 #include <iostream>
@@ -657,12 +658,60 @@ MDAL::Statistics MDAL::calculateStatistics( DatasetGroup *grp )
   if ( !grp )
     return ret;
 
+  // note: isComputed is a property of the caches only, set by setStatistics()
   for ( std::shared_ptr<Dataset> &ds : grp->datasets )
-  {
-    MDAL::Statistics dsStats = ds->statistics();
-    combineStatistics( ret, dsStats );
-  }
+    combineStatistics( ret, ensureStatistics( ds.get() ) );
   return ret;
+}
+
+MDAL::Statistics MDAL::ensureStatistics( Dataset *dataset )
+{
+  Statistics stats = dataset->statistics();
+  if ( !stats.isComputed )
+  {
+    const bool complete = _calculateDatasetStatistics( dataset, stats );
+    dataset->releaseLoadedData();
+    if ( !complete )
+    {
+      // the range covers only the values that could be read: caching it would
+      // make a transient read failure permanent, and a partial range looks
+      // plausible enough never to be questioned again
+      MDAL::Log::error( MDAL_Status::Err_InvalidData,
+                        "Could not read all the values of the dataset, statistics not computed" );
+      return Statistics();
+    }
+    dataset->setStatistics( stats );
+  }
+  return stats;
+}
+
+//! Whether every dataset of \a group has cached statistics, i.e. whether the
+//! group range was built from complete reads only
+static bool _allDatasetStatisticsComputed( MDAL::DatasetGroup *group )
+{
+  for ( const std::shared_ptr<MDAL::Dataset> &ds : group->datasets )
+  {
+    if ( !ds->statistics().isComputed )
+      return false;
+  }
+  return true;
+}
+
+MDAL::Statistics MDAL::ensureStatistics( DatasetGroup *group )
+{
+  Statistics stats = group->statistics();
+  if ( !stats.isComputed )
+  {
+    stats = calculateStatistics( group );
+    // a group range missing the values of an unreadable dataset is wrong but
+    // plausible: report it as unknown, like the dataset range, and do not
+    // cache it so that a later call retries
+    if ( !_allDatasetStatisticsComputed( group ) )
+      return Statistics();
+    if ( !group->isInEditMode() )
+      group->setStatistics( stats );
+  }
+  return stats;
 }
 
 MDAL::Statistics MDAL::calculateStatistics( std::shared_ptr<Dataset> dataset )

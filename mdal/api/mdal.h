@@ -684,6 +684,17 @@ MDAL_EXPORT int MDAL_G_maximumVerticalLevelCount( MDAL_DatasetGroupH group );
 /**
  * Returns the minimum and maximum values of the group
  * Returns NaN on error
+ *
+ * \note Since MDAL 1.4.0, when a mesh was loaded with MDAL_LF_SkipStatistics
+ * the driver did not pre-compute statistics; the first call to this function
+ * for such a group will block to compute the exact range over every dataset
+ * (potentially slow). The result is cached so subsequent calls are O(1).
+ * Use MDAL_G_minimumMaximumApprox() if you only need a quick estimate.
+ *
+ * \note Since MDAL 1.4.0, a dataset group still in edit mode (one for which
+ * MDAL_G_closeEditMode() has not been called yet) reports the range of the
+ * datasets added so far, and the result is not cached, so it keeps up with
+ * datasets added afterwards. Up to MDAL 1.3 such a group returned NaN.
  */
 MDAL_EXPORT void MDAL_G_minimumMaximum( MDAL_DatasetGroupH group, double *min, double *max );
 
@@ -870,6 +881,11 @@ MDAL_EXPORT int MDAL_D_data( MDAL_DatasetH dataset, int indexStart, int count, M
 /**
  * Returns the minimum and maximum values of the dataset
  * Returns NaN on error
+ *
+ * \note Since MDAL 1.4.0, when a mesh was loaded with MDAL_LF_SkipStatistics
+ * the driver did not pre-compute statistics; the first call to this function
+ * for such a dataset will block to compute the exact range over its values.
+ * The result is cached so subsequent calls are O(1).
  */
 MDAL_EXPORT void MDAL_D_minimumMaximum( MDAL_DatasetH dataset, double *min, double *max );
 

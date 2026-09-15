@@ -8,6 +8,8 @@
 #include <limits>
 #include <assert.h>
 #include <memory>
+#include <exception>
+#include <new>
 
 #include "mdal.h"
 #include "mdal_driver_manager.hpp"
@@ -18,6 +20,44 @@
 #define NODATA std::numeric_limits<double>::quiet_NaN()
 
 static const char *EMPTY_STR = "";
+
+/**
+ * Runs \a f, and turns anything it throws into a logged error and \a onError.
+ * Drivers read mesh and dataset data on demand, so a file that changes or
+ * disappears under an open mesh handle makes them throw from whichever entry
+ * point happens to read next. An exception crossing the extern "C" boundary
+ * terminates the host application, so every entry point that reads must go
+ * through this. \a what describes the failed operation for the error message.
+ */
+template <typename R, typename F>
+static R callGuarded( const char *what, R onError, F &&f )
+{
+  try
+  {
+    return f();
+  }
+  catch ( MDAL::Error &err )
+  {
+    MDAL::Log::error( err );
+  }
+  catch ( MDAL_Status status )
+  {
+    MDAL::Log::error( status, what );
+  }
+  catch ( std::bad_alloc & )
+  {
+    MDAL::Log::error( MDAL_Status::Err_NotEnoughMemory, what );
+  }
+  catch ( std::exception &e )
+  {
+    MDAL::Log::error( MDAL_Status::Err_UnknownFormat, std::string( what ) + ": " + e.what() );
+  }
+  catch ( ... )
+  {
+    MDAL::Log::error( MDAL_Status::Err_UnknownFormat, what );
+  }
+  return onError;
+}
 
 const char *MDAL_Version()
 {
@@ -947,7 +987,8 @@ void MDAL_G_minimumMaximum( MDAL_DatasetGroupH group, double *min, double *max )
   }
 
   MDAL::DatasetGroup *g = static_cast< MDAL::DatasetGroup * >( group );
-  MDAL::Statistics stats = g->statistics();
+  const MDAL::Statistics stats = callGuarded( "Failed to compute group statistics", MDAL::Statistics(),
+                                 [g] { return MDAL::ensureStatistics( g ); } );
   *min = stats.minimum;
   *max = stats.maximum;
 }
@@ -1414,7 +1455,8 @@ void MDAL_D_minimumMaximum( MDAL_DatasetH dataset, double *min, double *max )
   }
 
   MDAL::Dataset *ds = static_cast< MDAL::Dataset * >( dataset );
-  MDAL::Statistics stats = ds->statistics();
+  const MDAL::Statistics stats = callGuarded( "Failed to compute dataset statistics", MDAL::Statistics(),
+                                 [ds] { return MDAL::ensureStatistics( ds ); } );
   *min = stats.minimum;
   *max = stats.maximum;
 }

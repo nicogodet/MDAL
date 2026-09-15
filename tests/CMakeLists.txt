@@ -69,6 +69,7 @@ SET(TESTS
     test_2dm.cpp
     test_xms_tin.cpp
     test_api.cpp
+    test_approx_statistics.cpp
     test_ascii_dat.cpp
     test_binary_dat.cpp
     test_selafin.cpp
