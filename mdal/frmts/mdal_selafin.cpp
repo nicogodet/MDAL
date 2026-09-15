@@ -809,18 +809,33 @@ MDAL::MeshSelafinVertexIterator::MeshSelafinVertexIterator( std::shared_ptr<MDAL
 
 size_t MDAL::MeshSelafinVertexIterator::next( size_t vertexCount, double *coordinates )
 {
-  size_t count = std::min( vertexCount, mReader->verticesCount() - mPosition );
+  // The source file is read lazily here, through the C API, which has no
+  // exception handling: a file truncated or rewritten under an open handle
+  // must be reported as "nothing read", never let terminate the caller.
+  try
+  {
+    size_t count = std::min( vertexCount, mReader->verticesCount() - mPosition );
 
-  if ( count == 0 )
-    return 0;
+    if ( count == 0 )
+      return 0;
 
-  std::vector<double> coord = mReader->vertices( mPosition, count );
+    std::vector<double> coord = mReader->vertices( mPosition, count );
 
-  memcpy( coordinates, coord.data(), count * 24 );
+    memcpy( coordinates, coord.data(), count * 24 );
 
-  mPosition += count;
+    mPosition += count;
 
-  return count;
+    return count;
+  }
+  catch ( MDAL::Error &err )
+  {
+    MDAL::Log::error( err, "SELAFIN" );
+  }
+  catch ( MDAL_Status status )
+  {
+    MDAL::Log::error( status, "SELAFIN", "error occurred while reading vertices" );
+  }
+  return 0;
 }
 
 MDAL::MeshSelafinFaceIterator::MeshSelafinFaceIterator( std::shared_ptr<MDAL::SelafinFile> reader ):
@@ -831,39 +846,53 @@ size_t MDAL::MeshSelafinFaceIterator::next( size_t faceOffsetsBufferLen, int *fa
 {
   assert( faceOffsetsBuffer );
   assert( vertexIndicesBuffer );
-  assert( mReader->verticesPerFace() != 0 );
 
-  const size_t verticesPerFace = mReader->verticesPerFace();
-  size_t count = std::min( faceOffsetsBufferLen, mReader->facesCount() - mPosition );
-
-  count = std::min( count, vertexIndicesBufferLen / verticesPerFace );
-
-  if ( count == 0 )
-    return 0;
-
-  std::vector<int> indexes = mReader->connectivityIndex( mPosition * verticesPerFace, count * verticesPerFace );
-
-  if ( indexes.size() != count * verticesPerFace )
-    throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading faces" );
-
-  int vertexLocalIndex = 0;
-
-  for ( size_t i = 0; i < count; i++ )
+  // see MeshSelafinVertexIterator::next: reading here must not throw through
+  // the C API
+  try
   {
-    for ( size_t j = 0; j < verticesPerFace; ++j )
+    assert( mReader->verticesPerFace() != 0 );
+
+    const size_t verticesPerFace = mReader->verticesPerFace();
+    size_t count = std::min( faceOffsetsBufferLen, mReader->facesCount() - mPosition );
+
+    count = std::min( count, vertexIndicesBufferLen / verticesPerFace );
+
+    if ( count == 0 )
+      return 0;
+
+    std::vector<int> indexes = mReader->connectivityIndex( mPosition * verticesPerFace, count * verticesPerFace );
+
+    if ( indexes.size() != count * verticesPerFace )
+      throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading faces" );
+
+    int vertexLocalIndex = 0;
+
+    for ( size_t i = 0; i < count; i++ )
     {
-      if ( size_t( indexes[j + i * verticesPerFace] ) > mReader->verticesCount() )
-        throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading faces" );
-      vertexIndicesBuffer[vertexLocalIndex + j] = indexes[j + i * verticesPerFace] - 1;
+      for ( size_t j = 0; j < verticesPerFace; ++j )
+      {
+        if ( size_t( indexes[j + i * verticesPerFace] ) > mReader->verticesCount() )
+          throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading faces" );
+        vertexIndicesBuffer[vertexLocalIndex + j] = indexes[j + i * verticesPerFace] - 1;
+      }
+      vertexLocalIndex += MDAL::toInt( verticesPerFace );
+      faceOffsetsBuffer[i] = vertexLocalIndex;
     }
-    vertexLocalIndex += MDAL::toInt( verticesPerFace );
-    faceOffsetsBuffer[i] = vertexLocalIndex;
+
+    mPosition += count;
+
+    return count;
   }
-
-  mPosition += count;
-
-  return count;
-
+  catch ( MDAL::Error &err )
+  {
+    MDAL::Log::error( err, "SELAFIN" );
+  }
+  catch ( MDAL_Status status )
+  {
+    MDAL::Log::error( status, "SELAFIN", "error occurred while reading faces" );
+  }
+  return 0;
 }
 
 MDAL::DatasetSelafin::DatasetSelafin( MDAL::DatasetGroup *parent,
@@ -876,32 +905,60 @@ MDAL::DatasetSelafin::DatasetSelafin( MDAL::DatasetGroup *parent,
 
 size_t MDAL::DatasetSelafin::scalarData( size_t indexStart, size_t count, double *buffer )
 {
-  count = std::min( mReader->verticesCount() - indexStart, count );
-  std::vector<double> values = mReader->datasetValues( mTimeStepIndex, mXVariableIndex, indexStart, count );
-  if ( values.size() != count )
-    throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading dataset value" );
+  // see MeshSelafinVertexIterator::next: reading here must not throw through
+  // the C API
+  try
+  {
+    count = std::min( mReader->verticesCount() - indexStart, count );
+    std::vector<double> values = mReader->datasetValues( mTimeStepIndex, mXVariableIndex, indexStart, count );
+    if ( values.size() != count )
+      throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading dataset value" );
 
-  memcpy( buffer, values.data(), count * 8 );
+    memcpy( buffer, values.data(), count * 8 );
 
-  return count;
+    return count;
+  }
+  catch ( MDAL::Error &err )
+  {
+    MDAL::Log::error( err, "SELAFIN" );
+  }
+  catch ( MDAL_Status status )
+  {
+    MDAL::Log::error( status, "SELAFIN", "error occurred while reading dataset values" );
+  }
+  return 0;
 }
 
 size_t MDAL::DatasetSelafin::vectorData( size_t indexStart, size_t count, double *buffer )
 {
-  count = std::min( mReader->verticesCount() - indexStart, count );
-  std::vector<double> xValues = mReader->datasetValues( mTimeStepIndex, mXVariableIndex, indexStart, count );
-  std::vector<double> yValues = mReader->datasetValues( mTimeStepIndex, mYVariableIndex, indexStart, count );
-
-  if ( xValues.size() != count  || yValues.size() != count )
-    throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading dataset value" );
-
-  for ( size_t i = 0; i < count; ++i )
+  // see MeshSelafinVertexIterator::next: reading here must not throw through
+  // the C API
+  try
   {
-    buffer[2 * i] = xValues[i];
-    buffer[2 * i + 1] = yValues[i];
-  }
+    count = std::min( mReader->verticesCount() - indexStart, count );
+    std::vector<double> xValues = mReader->datasetValues( mTimeStepIndex, mXVariableIndex, indexStart, count );
+    std::vector<double> yValues = mReader->datasetValues( mTimeStepIndex, mYVariableIndex, indexStart, count );
 
-  return count;
+    if ( xValues.size() != count  || yValues.size() != count )
+      throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading dataset value" );
+
+    for ( size_t i = 0; i < count; ++i )
+    {
+      buffer[2 * i] = xValues[i];
+      buffer[2 * i + 1] = yValues[i];
+    }
+
+    return count;
+  }
+  catch ( MDAL::Error &err )
+  {
+    MDAL::Log::error( err, "SELAFIN" );
+  }
+  catch ( MDAL_Status status )
+  {
+    MDAL::Log::error( status, "SELAFIN", "error occurred while reading dataset values" );
+  }
+  return 0;
 }
 
 void MDAL::DatasetSelafin::setXVariableIndex( size_t index )

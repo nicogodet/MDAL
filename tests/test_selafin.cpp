@@ -6,6 +6,7 @@
 #include "gtest/gtest.h"
 #include <string>
 #include <vector>
+#include <fstream>
 
 //mdal
 #include "mdal.h"
@@ -274,6 +275,60 @@ TEST( MeshSLFTest, SaveMeshFrame )
     test_file( "/slf/example_res_fr.slf" ),
     tmp_file( "/emptymesh.slf" ),
     "SELAFIN" );
+}
+
+TEST( MeshSLFTest, TruncatedFileUnderOpenHandle )
+{
+  // A Selafin mesh reads its frame and its values lazily, so a file rewritten
+  // or truncated by another program while MDAL holds it open fails in the
+  // middle of a read. Those reads happen under the C API, which has no
+  // exception handling of its own: they must report the failure and return
+  // nothing instead of terminating the calling process.
+  std::string file = tmp_file( "/selafin_truncated_under_handle.slf" );
+  copy( test_file( "/slf/example_res_fr.slf" ), file );
+
+  MDAL_MeshH mesh = MDAL_LoadMesh( file.c_str() );
+  ASSERT_NE( mesh, nullptr );
+  ASSERT_EQ( MDAL_Status::None, MDAL_LastStatus() );
+  MDAL_DatasetGroupH group = MDAL_M_datasetGroup( mesh, 0 );
+  ASSERT_NE( group, nullptr );
+  const int datasetCount = MDAL_G_datasetCount( group );
+  ASSERT_GT( datasetCount, 0 );
+  MDAL_DatasetH dataset = MDAL_G_dataset( group, datasetCount - 1 );
+  ASSERT_NE( dataset, nullptr );
+
+  // truncate the file while the mesh handle is open
+  {
+    std::ofstream truncated( file, std::ios::binary | std::ios::trunc );
+    ASSERT_TRUE( truncated.is_open() );
+  }
+
+  // the frame has been parsed already, so the counts stay available
+  EXPECT_GT( MDAL_M_vertexCount( mesh ), 0 );
+
+  MDAL_ResetStatus();
+  std::vector<double> coordinates( 3 * 10 );
+  MDAL_MeshVertexIteratorH vertexIterator = MDAL_M_vertexIterator( mesh );
+  EXPECT_EQ( 0, MDAL_VI_next( vertexIterator, 10, coordinates.data() ) );
+  EXPECT_NE( MDAL_Status::None, MDAL_LastStatus() );
+  MDAL_VI_close( vertexIterator );
+
+  MDAL_ResetStatus();
+  std::vector<int> faceOffsets( 10 );
+  std::vector<int> vertexIndices( 30 );
+  MDAL_MeshFaceIteratorH faceIterator = MDAL_M_faceIterator( mesh );
+  EXPECT_EQ( 0, MDAL_FI_next( faceIterator, 10, faceOffsets.data(), 30, vertexIndices.data() ) );
+  EXPECT_NE( MDAL_Status::None, MDAL_LastStatus() );
+  MDAL_FI_close( faceIterator );
+
+  MDAL_ResetStatus();
+  std::vector<double> values( 2 * 10 );
+  const MDAL_DataType dataType = MDAL_G_hasScalarData( group ) ?
+                                 MDAL_DataType::SCALAR_DOUBLE : MDAL_DataType::VECTOR_2D_DOUBLE;
+  EXPECT_EQ( 0, MDAL_D_data( dataset, 0, 10, dataType, values.data() ) );
+  EXPECT_NE( MDAL_Status::None, MDAL_LastStatus() );
+
+  MDAL_CloseMesh( mesh );
 }
 
 static MDAL_DatasetGroupH addNewScalarDatasetGroup( MDAL_MeshH mesh, MDAL_DriverH driver, std::string file )
