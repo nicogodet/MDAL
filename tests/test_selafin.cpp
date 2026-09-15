@@ -6,13 +6,15 @@
 #include "gtest/gtest.h"
 #include <string>
 #include <vector>
+#include <algorithm>
 #include <fstream>
+#include <cstdio>
+#include <iterator>
 
 //mdal
 #include "mdal.h"
 #include "mdal_utils.hpp"
 #include "mdal_testutils.hpp"
-#include "frmts/mdal_selafin.hpp"
 
 #ifdef _MSC_VER
 #include <locale>
@@ -277,10 +279,550 @@ TEST( MeshSLFTest, SaveMeshFrame )
     "SELAFIN" );
 }
 
+// Minimal standalone reader for the IPOBO record of a SELAFIN file: records
+// are framed by two 4-byte lengths, so every record before the IPOBO one can
+// be skipped generically. Local to the tests on purpose — the test binaries
+// only consume the exported C API plus this reader.
+static int readInt( std::ifstream &f, bool bigEndian )
+{
+  unsigned char b[4] = { 0, 0, 0, 0 };
+  f.read( reinterpret_cast<char *>( b ), 4 );
+  if ( bigEndian )
+    return ( b[0] << 24 ) | ( b[1] << 16 ) | ( b[2] << 8 ) | b[3];
+  return ( b[3] << 24 ) | ( b[2] << 16 ) | ( b[1] << 8 ) | b[0];
+}
+
+static int readBigEndianInt( std::ifstream &f )
+{
+  return readInt( f, true );
+}
+
+static std::vector<int> readIpoboFromFile( const std::string &fileName )
+{
+  std::ifstream f( fileName, std::ios::binary );
+  if ( !f.is_open() )
+    return std::vector<int>();
+
+  // Selafin files are big-endian, but some tools (Janet) write little-endian
+  // ones. The first record holds the 80-character title, so its length prefix
+  // tells them apart, the way SelafinFile::initialize does.
+  const bool bigEndian = readBigEndianInt( f ) == 80;
+  f.seekg( 0 );
+
+  int len = readInt( f, bigEndian );  // title record (80 chars)
+  if ( len != 80 )
+    return std::vector<int>();
+  f.seekg( len + 4, std::ios::cur );
+
+  len = readInt( f, bigEndian );  // NBV(1), NBV(2)
+  const std::streamoff nbvPos = f.tellg();
+  const int nbv1 = readInt( f, bigEndian );
+  const int nbv2 = readInt( f, bigEndian );
+  f.seekg( nbvPos + len + 4 );
+
+  for ( int i = 0; i < nbv1 + nbv2; ++i )  // variable names
+  {
+    len = readInt( f, bigEndian );
+    f.seekg( len + 4, std::ios::cur );
+  }
+
+  len = readInt( f, bigEndian );  // IPARAM
+  const std::streamoff iparamPos = f.tellg();
+  std::vector<int> iparam( 10, 0 );
+  for ( int i = 0; i < 10 && i * 4 < len; ++i )
+    iparam[i] = readInt( f, bigEndian );
+  f.seekg( iparamPos + len + 4 );
+
+  if ( iparam[9] == 1 )  // date record
+  {
+    len = readInt( f, bigEndian );
+    f.seekg( len + 4, std::ios::cur );
+  }
+
+  len = readInt( f, bigEndian );  // NELEM, NPOIN, NDP, 1
+  const std::streamoff elemPos = f.tellg();
+  readInt( f, bigEndian );  // NELEM
+  const int npoin = readInt( f, bigEndian );
+  f.seekg( elemPos + len + 4 );
+
+  len = readInt( f, bigEndian );  // connectivity
+  f.seekg( len + 4, std::ios::cur );
+
+  len = readInt( f, bigEndian );  // IPOBO
+  if ( !f || npoin <= 0 || len != npoin * 4 )
+    return std::vector<int>();
+  std::vector<int> ipobo( npoin );
+  for ( int i = 0; i < npoin; ++i )
+    ipobo[i] = readInt( f, bigEndian );
+  if ( !f )
+    return std::vector<int>();
+  return ipobo;
+}
+
 static bool fileIsPresent( const std::string &fileName )
 {
   std::ifstream f( fileName, std::ios::binary );
   return f.is_open();
+}
+
+static std::string fileContent( const std::string &fileName )
+{
+  std::ifstream f( fileName, std::ios::binary );
+  return std::string( ( std::istreambuf_iterator<char>( f ) ), std::istreambuf_iterator<char>() );
+}
+
+// Builds a triangulated MemoryMesh (2DM) from interleaved x,y,z coordinates
+// and 0-based triangle connectivity.
+static MDAL_MeshH createTriMesh( std::vector<double> &coords, std::vector<int> &faceIndices )
+{
+  MDAL_DriverH driver = MDAL_driverFromName( "2DM" );
+  MDAL_MeshH mesh = MDAL_CreateMesh( driver );
+  const int nVerts = static_cast<int>( coords.size() / 3 );
+  const int nFaces = static_cast<int>( faceIndices.size() / 3 );
+  MDAL_M_addVertices( mesh, nVerts, coords.data() );
+  std::vector<int> faceSizes( static_cast<size_t>( nFaces ), 3 );
+  MDAL_M_addFaces( mesh, nFaces, faceSizes.data(), faceIndices.data() );
+  return mesh;
+}
+
+// Saves such a mesh as SELAFIN (a MemoryMesh, so save() takes the compute path
+// and exercises computeIPOBO) and returns the IPOBO array read back.
+static std::vector<int> saveTriMeshAndReadIpobo(
+  std::vector<double> coords,        // x,y,z interleaved (C API needs mutable data)
+  std::vector<int> faceIndices,      // 3 per triangle, 0-based
+  const std::string &tmpName )
+{
+  MDAL_MeshH mesh = createTriMesh( coords, faceIndices );
+  std::string savedFile = tmp_file( tmpName );
+  MDAL_SaveMesh( mesh, savedFile.c_str(), "SELAFIN" );
+  EXPECT_EQ( MDAL_Status::None, MDAL_LastStatus() ) << "SELAFIN save failed";
+  MDAL_CloseMesh( mesh );
+  return readIpoboFromFile( savedFile );
+}
+
+// Saves a mesh whose boundary cannot be numbered: the save must fail with
+// Err_IncompatibleMesh, leave the file it was about to replace untouched and
+// leave no temporary file behind.
+static void expectSaveRejected( std::vector<double> coords,
+                                std::vector<int> faceIndices,
+                                const std::string &tmpName )
+{
+  MDAL_MeshH mesh = createTriMesh( coords, faceIndices );
+  std::string savedFile = tmp_file( tmpName );
+  const std::string existing = "this file must survive the failed save";
+  {
+    std::ofstream target( savedFile, std::ios::binary | std::ios::trunc );
+    ASSERT_TRUE( target.is_open() );
+    target << existing;
+  }
+  std::remove( ( savedFile + ".tmp" ).c_str() );  // a previous run may have left one
+
+  MDAL_SaveMesh( mesh, savedFile.c_str(), "SELAFIN" );
+  EXPECT_EQ( MDAL_Status::Err_IncompatibleMesh, MDAL_LastStatus() )
+      << "A mesh whose boundary cannot be numbered must be rejected";
+  MDAL_CloseMesh( mesh );
+
+  EXPECT_EQ( existing, fileContent( savedFile ) ) << "the target file must be left untouched";
+  EXPECT_FALSE( fileIsPresent( savedFile + ".tmp" ) ) << "no temporary file must be left behind";
+}
+
+TEST( MeshSLFTest, IPOBOComputation )
+{
+  // Build a 3x3 triangulated grid in memory and save it as SELAFIN. The mesh
+  // is a MemoryMesh, so save() takes the compute path and exercises
+  // computeIPOBO. The expected vector was traced by hand from the documented
+  // algorithm and cross-checked with an independent reference implementation.
+  //
+  //   6 -- 7 -- 8
+  //   |  / |  / |
+  //   3 -- 4 -- 5
+  //   |  / |  / |
+  //   0 -- 1 -- 2
+  std::vector<double> coords
+  {
+    0, 0, 0,   1, 0, 0,   2, 0, 0,
+    0, 1, 0,   1, 1, 0,   2, 1, 0,
+    0, 2, 0,   1, 2, 0,   2, 2, 0,
+  };
+  std::vector<int> faceIndices
+  {
+    0, 1, 4,   0, 4, 3,
+    1, 2, 5,   1, 5, 4,
+    3, 4, 7,   3, 7, 6,
+    4, 5, 8,   4, 8, 7,
+  };
+
+  std::vector<int> ipobo = saveTriMeshAndReadIpobo( coords, faceIndices, "/ipobo_grid.slf" );
+  // build_ipobo() reference: SW corner (vertex 0) starts at 1, perimeter CCW,
+  // centre vertex 4 interior.
+  const std::vector<int> expected{ 1, 2, 3, 8, 0, 4, 7, 6, 5 };
+  EXPECT_EQ( ipobo, expected ) << "IPOBO does not match the expected boundary numbering";
+}
+
+TEST( MeshSLFTest, IPOBOIsland )
+{
+  // 4x4 grid (row-major, x fastest) with the central cell removed, forming an
+  // annulus: a 12-node outer boundary (CCW) enclosing a 4-node island (CW).
+  // The outer ring is numbered 1..12 first, then the island 13..16
+  // (hand-traced and cross-checked with an independent reference
+  // implementation).
+  std::vector<double> coords;
+  for ( int yy = 0; yy < 4; ++yy )
+    for ( int xx = 0; xx < 4; ++xx )
+    {
+      coords.push_back( xx );
+      coords.push_back( yy );
+      coords.push_back( 0 );
+    }
+  std::vector<int> faceIndices
+  {
+    0, 1, 5,    0, 5, 4,
+    1, 2, 6,    1, 6, 5,
+    2, 3, 7,    2, 7, 6,
+    4, 5, 9,    4, 9, 8,
+    6, 7, 11,   6, 11, 10,
+    8, 9, 13,   8, 13, 12,
+    9, 10, 14,  9, 14, 13,
+    10, 11, 15, 10, 15, 14,
+  };
+
+  std::vector<int> ipobo = saveTriMeshAndReadIpobo( coords, faceIndices, "/ipobo_island.slf" );
+  const std::vector<int> expected{ 1, 2, 3, 4, 12, 13, 16, 5, 11, 14, 15, 6, 10, 9, 8, 7 };
+  EXPECT_EQ( ipobo, expected ) << "Island IPOBO does not match the expected boundary numbering";
+}
+
+TEST( MeshSLFTest, IPOBOMultiDomain )
+{
+  // Two disjoint unit squares far apart. The domain whose south-west node has
+  // the smaller (x+y) is numbered first; both external rings are CCW.
+  std::vector<double> coords
+  {
+    0,  0,  0,    1,  0,  0,    1,  1,  0,    0,  1,  0,
+    10, 10, 0,    11, 10, 0,    11, 11, 0,    10, 11, 0,
+  };
+  std::vector<int> faceIndices
+  {
+    0, 1, 2,   0, 2, 3,
+    4, 5, 6,   4, 6, 7,
+  };
+
+  std::vector<int> ipobo = saveTriMeshAndReadIpobo( coords, faceIndices, "/ipobo_multidomain.slf" );
+  const std::vector<int> expected{ 1, 2, 3, 4, 5, 6, 7, 8 };
+  EXPECT_EQ( ipobo, expected ) << "Multi-domain IPOBO does not match the expected boundary numbering";
+}
+
+TEST( MeshSLFTest, IPOBOSuperimposedNodes )
+{
+  // Two sub-domains separated by a zero-width weir: nodes 4,5 (domain A) and
+  // 6,7 (domain B) share the same coordinates, so B's south-west node lies
+  // exactly ON A's ring. The representative-point fallback must keep BOTH
+  // contours classified as external (depth 0) and hence CCW.
+  std::vector<double> coords
+  {
+    0, 0, 0,    2, 0, 0,    2, 4, 0,    0, 4, 0,
+    0, 1, 0,    0, 3, 0,
+    0, 1, 0,    0, 3, 0,    -1, 3.5, 0,
+  };
+  std::vector<int> faceIndices
+  {
+    1, 2, 3,   1, 3, 5,   1, 5, 4,   1, 4, 0,
+    6, 7, 8,
+  };
+
+  std::vector<int> ipobo = saveTriMeshAndReadIpobo( coords, faceIndices, "/ipobo_superimposed.slf" );
+  const std::vector<int> expected{ 1, 2, 3, 4, 6, 5, 7, 8, 9 };
+  EXPECT_EQ( ipobo, expected ) << "Superimposed weir nodes must not demote a domain to an island";
+}
+
+TEST( MeshSLFTest, IPOBOIslandInIsland )
+{
+  // The 4x4 annulus of IPOBOIsland plus a small triangle floating inside the
+  // hole: depth 2 (even) so the triangle is an external CCW contour, child of
+  // the hole in the containment forest, numbered right after it.
+  std::vector<double> coords;
+  for ( int yy = 0; yy < 4; ++yy )
+    for ( int xx = 0; xx < 4; ++xx )
+    {
+      coords.push_back( xx );
+      coords.push_back( yy );
+      coords.push_back( 0 );
+    }
+  const std::vector<double> triangle{ 1.2, 1.2, 0,   1.8, 1.2, 0,   1.5, 1.8, 0 };
+  coords.insert( coords.end(), triangle.begin(), triangle.end() );
+  std::vector<int> faceIndices
+  {
+    0, 1, 5,    0, 5, 4,
+    1, 2, 6,    1, 6, 5,
+    2, 3, 7,    2, 7, 6,
+    4, 5, 9,    4, 9, 8,
+    6, 7, 11,   6, 11, 10,
+    8, 9, 13,   8, 13, 12,
+    9, 10, 14,  9, 14, 13,
+    10, 11, 15, 10, 15, 14,
+    16, 17, 18,
+  };
+
+  std::vector<int> ipobo = saveTriMeshAndReadIpobo( coords, faceIndices, "/ipobo_island2.slf" );
+  const std::vector<int> expected{ 1, 2, 3, 4, 12, 13, 16, 5, 11, 14, 15, 6, 10, 9, 8, 7, 17, 18, 19 };
+  EXPECT_EQ( ipobo, expected ) << "Doubly-nested contour must be CCW and numbered after its parent";
+}
+
+TEST( MeshSLFTest, IPOBOTieBreakSouthWestKey )
+{
+  // Two disjoint squares whose south-west corners share the same x+y key (0):
+  // the tie must break on the smallest node id, so the square owning node 0
+  // is numbered first.
+  std::vector<double> coords
+  {
+    0, 0, 0,    1, 0, 0,    1, 1, 0,    0, 1, 0,
+    2, -2, 0,   3, -2, 0,   3, -1, 0,   2, -1, 0,
+  };
+  std::vector<int> faceIndices
+  {
+    0, 1, 2,   0, 2, 3,
+    4, 5, 6,   4, 6, 7,
+  };
+
+  std::vector<int> ipobo = saveTriMeshAndReadIpobo( coords, faceIndices, "/ipobo_tiebreak.slf" );
+  const std::vector<int> expected{ 1, 2, 3, 4, 5, 6, 7, 8 };
+  EXPECT_EQ( ipobo, expected ) << "Equal x+y keys must break ties on the smallest node id";
+}
+
+TEST( MeshSLFTest, IPOBODegenerateBowtie )
+{
+  // Two triangles meeting at a single shared vertex (node 0) form a pinch
+  // point: node 0 is the end of 4 boundary edges, so the boundary does not
+  // decompose into simple contours and cannot be numbered. An all-zero IPOBO
+  // would read as NPTFR = 0 in Telemac, so the save must fail instead.
+  std::vector<double> coords
+  {
+    0,  0, 0,    1, 0, 0,    0,  1, 0,
+    -1, 0, 0,    0, -1, 0,
+  };
+  std::vector<int> faceIndices
+  {
+    0, 1, 2,
+    0, 3, 4,
+  };
+
+  expectSaveRejected( coords, faceIndices, "/ipobo_bowtie.slf" );
+}
+
+TEST( MeshSLFTest, IPOBONonManifoldEdge )
+{
+  // Three triangles sharing the edge 0-1. That edge is used by more than two
+  // faces, so it is neither a boundary edge nor a regular interior one: the
+  // boundary it belongs to cannot be traced and the save must fail rather than
+  // silently number a wrong boundary.
+  std::vector<double> coords
+  {
+    0, 0, 0,      1, 0, 0,
+    0.5, 1, 0,    0.5, -1, 0,    1.5, 0.5, 0,
+  };
+  std::vector<int> faceIndices
+  {
+    0, 1, 2,
+    0, 1, 3,
+    0, 1, 4,
+  };
+
+  expectSaveRejected( coords, faceIndices, "/ipobo_nonmanifold.slf" );
+}
+
+TEST( MeshSLFTest, IPOBONonTriangular )
+{
+  // SELAFIN is triangles-only: a quad mesh must be rejected up front by
+  // MDAL_SaveMesh (Err_IncompatibleMesh) rather than silently producing a file.
+  // (computeIPOBO keeps an internal verticesPerFace != 3 guard as defence in
+  // depth, but the public save path never reaches it.)
+  MDAL_DriverH driver = MDAL_driverFromName( "2DM" );
+  MDAL_MeshH mesh = MDAL_CreateMesh( driver );
+  std::vector<double> coords{ 0, 0, 0,   1, 0, 0,   1, 1, 0,   0, 1, 0 };
+  MDAL_M_addVertices( mesh, 4, coords.data() );
+  std::vector<int> faceSizes{ 4 };
+  std::vector<int> faceIndices{ 0, 1, 2, 3 };
+  MDAL_M_addFaces( mesh, 1, faceSizes.data(), faceIndices.data() );
+  std::string savedFile = tmp_file( "/ipobo_quad.slf" );
+  MDAL_SaveMesh( mesh, savedFile.c_str(), "SELAFIN" );
+  EXPECT_EQ( MDAL_Status::Err_IncompatibleMesh, MDAL_LastStatus() )
+      << "A non-triangular mesh must be rejected by the SELAFIN driver";
+  MDAL_CloseMesh( mesh );
+}
+
+TEST( MeshSLFTest, IPOBOManyIslands )
+{
+  // A 70x70 lattice of nodes with a 2x2-cell hole punched every 5 cells: one
+  // outer contour and 196 islands, each an 8-node ring around a centre node
+  // left out of every triangle. Contour tracing and contour nesting both have
+  // to visit every contour, so this is where a quadratic implementation shows
+  // up; what is checked here is the numbering itself, not the time it takes.
+  const int side = 70;             // nodes per row
+  const int holeSize = 2;          // cells
+  const int period = 5;            // cells
+  const int islandRingNodes = 8;
+  const int outerRingNodes = 4 * ( side - 1 );
+
+  std::vector<double> coords;
+  coords.reserve( static_cast<size_t>( side ) * side * 3 );
+  for ( int i = 0; i < side; ++i )
+    for ( int j = 0; j < side; ++j )
+    {
+      coords.push_back( i );
+      coords.push_back( j );
+      coords.push_back( 0 );
+    }
+  auto nodeAt = [side]( int i, int j ) { return i * side + j; };
+
+  std::vector<std::pair<int, int>> holes;  // lower-left cell of each hole
+  for ( int i = 1; i + holeSize <= side - 2; i += period )
+    for ( int j = 1; j + holeSize <= side - 2; j += period )
+      holes.push_back( std::make_pair( i, j ) );
+
+  std::vector<bool> removed( static_cast<size_t>( side - 1 ) * ( side - 1 ), false );
+  for ( const auto &hole : holes )
+    for ( int a = hole.first; a < hole.first + holeSize; ++a )
+      for ( int b = hole.second; b < hole.second + holeSize; ++b )
+        removed[static_cast<size_t>( a ) * ( side - 1 ) + b] = true;
+
+  std::vector<int> faceIndices;
+  for ( int i = 0; i + 1 < side; ++i )
+    for ( int j = 0; j + 1 < side; ++j )
+    {
+      if ( removed[static_cast<size_t>( i ) * ( side - 1 ) + j] )
+        continue;
+      const int n00 = nodeAt( i, j );
+      const int n10 = nodeAt( i + 1, j );
+      const int n01 = nodeAt( i, j + 1 );
+      const int n11 = nodeAt( i + 1, j + 1 );
+      faceIndices.insert( faceIndices.end(), { n00, n10, n11 } );
+      faceIndices.insert( faceIndices.end(), { n00, n11, n01 } );
+    }
+
+  std::vector<int> ipobo = saveTriMeshAndReadIpobo( coords, faceIndices, "/ipobo_many_islands.slf" );
+  ASSERT_EQ( ipobo.size(), static_cast<size_t>( side ) * side );
+
+  // consecutive 1..NPTFR, no gap and no duplicate
+  std::vector<int> numbering;
+  for ( int value : ipobo )
+    if ( value > 0 )
+      numbering.push_back( value );
+  std::sort( numbering.begin(), numbering.end() );
+  ASSERT_EQ( numbering.size(),
+             static_cast<size_t>( outerRingNodes + islandRingNodes * static_cast<int>( holes.size() ) ) );
+  for ( size_t i = 0; i < numbering.size(); ++i )
+    ASSERT_EQ( numbering[i], static_cast<int>( i + 1 ) ) << "IPOBO numbering is not consecutive";
+
+  // the outer contour comes first, starting from the south-west corner
+  EXPECT_EQ( 1, ipobo[nodeAt( 0, 0 )] );
+  for ( int i = 0; i < side; ++i )
+    for ( int j = 0; j < side; ++j )
+    {
+      const bool onBorder = i == 0 || j == 0 || i == side - 1 || j == side - 1;
+      if ( onBorder )
+      {
+        EXPECT_GT( ipobo[nodeAt( i, j )], 0 ) << "border node " << i << "," << j << " is not numbered";
+        EXPECT_LE( ipobo[nodeAt( i, j )], outerRingNodes ) << "border node " << i << "," << j
+            << " is not part of the outer contour";
+      }
+    }
+
+  // every island owns a consecutive block of 8 numbers, after the outer contour
+  for ( const auto &hole : holes )
+  {
+    EXPECT_EQ( 0, ipobo[nodeAt( hole.first + 1, hole.second + 1 )] )
+        << "the node left inside a hole must not be numbered";
+
+    std::vector<int> ring;
+    for ( int a = hole.first; a <= hole.first + holeSize; ++a )
+      for ( int b = hole.second; b <= hole.second + holeSize; ++b )
+        if ( a != hole.first + 1 || b != hole.second + 1 )
+          ring.push_back( ipobo[nodeAt( a, b )] );
+    ASSERT_EQ( ring.size(), static_cast<size_t>( islandRingNodes ) );
+    std::sort( ring.begin(), ring.end() );
+    EXPECT_GT( ring[0], outerRingNodes ) << "islands must be numbered after the outer contour";
+    for ( size_t k = 0; k < ring.size(); ++k )
+      EXPECT_EQ( ring[k], ring[0] + static_cast<int>( k ) )
+          << "island at cell " << hole.first << "," << hole.second << " is not numbered consecutively";
+  }
+}
+
+TEST( MeshSLFTest, IPOBOMatchesTelemacFiles )
+{
+  // The numbering convention is locked against real files, written by four
+  // different tools. Each mesh is rebuilt as a MemoryMesh through the public
+  // API, which is what QGIS hands to the driver, so the save takes the compute
+  // path; the recomputed IPOBO must then be the array stored in the source
+  // file, node for node.
+  const std::vector<std::string> sources
+  {
+    "/slf/test_sd_6.slf",                  // Janet, little-endian
+    "/slf/test_sd_7.slf",                  // Telemac-2D v7p2r0, IPARAM(8) = NPTFR
+    "/slf/example_res_fr.slf",             // Malpasset reference
+    "/slf/geo_Fudaa_doublePrecision.geo",  // Fudaa-Prepro
+  };
+
+  for ( const std::string &source : sources )
+  {
+    const std::string sourceFile = test_file( source );
+    const std::vector<int> storedIpobo = readIpoboFromFile( sourceFile );
+    ASSERT_FALSE( storedIpobo.empty() ) << source;
+
+    MDAL_MeshH src = MDAL_LoadMesh( sourceFile.c_str() );
+    ASSERT_NE( src, nullptr ) << source;
+    const int nVerts = MDAL_M_vertexCount( src );
+    const int nFaces = MDAL_M_faceCount( src );
+    std::vector<double> coords = getCoordinates( src, nVerts );
+    std::vector<int> faceIndices = faceVertexIndices( src, nFaces );  // 3 per face
+    MDAL_CloseMesh( src );
+
+    const std::vector<int> ipobo =
+      saveTriMeshAndReadIpobo( coords, faceIndices, "/ipobo_convention.slf" );
+    EXPECT_EQ( storedIpobo, ipobo ) << "the recomputed IPOBO differs from the one stored in " << source;
+  }
+}
+
+TEST( MeshSLFTest, IPOBOLargeMeshBoundarySet )
+{
+  // Rebuild a real TELEMAC mesh (Malpasset, 13541 nodes) as a MemoryMesh so
+  // save() takes the compute path, then verify computeIPOBO marks EXACTLY the
+  // same boundary node set as the file shipped by TELEMAC, numbered
+  // consecutively 1..N. example.slf does not store a real numbering, so only
+  // the boundary SET and its consecutiveness can be checked here;
+  // IPOBOMatchesTelemacFiles above compares the numbering itself against the
+  // files that do store one.
+  std::string sourceFile = test_file( "/slf/example.slf" );
+  std::vector<int> storedIpobo = readIpoboFromFile( sourceFile );
+  ASSERT_FALSE( storedIpobo.empty() );
+
+  MDAL_MeshH src = MDAL_LoadMesh( sourceFile.c_str() );
+  ASSERT_NE( src, nullptr );
+  const int nVerts = MDAL_M_vertexCount( src );
+  const int nFaces = MDAL_M_faceCount( src );
+  std::vector<double> coords = getCoordinates( src, nVerts );
+  std::vector<int> faceIndices = faceVertexIndices( src, nFaces );  // 3 per face
+  MDAL_CloseMesh( src );
+
+  std::vector<int> ipobo = saveTriMeshAndReadIpobo( coords, faceIndices, "/ipobo_large.slf" );
+  ASSERT_EQ( ipobo.size(), storedIpobo.size() );
+
+  // Same boundary node set.
+  int nBoundary = 0;
+  for ( size_t i = 0; i < ipobo.size(); ++i )
+  {
+    EXPECT_EQ( ipobo[i] > 0, storedIpobo[i] > 0 )
+        << "Boundary classification differs at node " << i;
+    if ( ipobo[i] > 0 )
+      ++nBoundary;
+  }
+  EXPECT_GT( nBoundary, 0 );
+
+  // Consecutive 1..nBoundary, no gaps or duplicates.
+  std::vector<int> vals;
+  for ( int v : ipobo )
+    if ( v > 0 ) vals.push_back( v );
+  std::sort( vals.begin(), vals.end() );
+  for ( size_t i = 0; i < vals.size(); ++i )
+    EXPECT_EQ( vals[i], static_cast<int>( i + 1 ) ) << "IPOBO numbering is not consecutive";
 }
 
 TEST( MeshSLFTest, TruncatedFileUnderOpenHandle )

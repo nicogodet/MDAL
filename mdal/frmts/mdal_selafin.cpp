@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
+#include <limits>
 #include <cassert>
 #include <memory>
 #include <algorithm>
@@ -1053,6 +1055,458 @@ static void readVerticesXY( MDAL::Mesh *mesh, std::vector<double> &xValues, std:
   while ( count != 0 );
 }
 
+// Helpers for computeIPOBO. All operate on 1-based node ids: x[node-1] / y[node-1].
+
+// Shoelace signed area of an OPEN ring; > 0 means counter-clockwise (CCW).
+// The terms are computed relative to the first node of the ring. The shoelace
+// is translation invariant, but on projected coordinates (Lambert-93, UTM) the
+// raw products x*y reach 5e12, whose ulp is about 1e-3, so the sum loses the
+// sign of any contour smaller than a few square millimetres. Relative to a
+// local origin the terms stay at the size of the contour itself.
+static double ipoboSignedArea( const std::vector<int> &ring,
+                               const std::vector<double> &x,
+                               const std::vector<double> &y )
+{
+  const size_t n = ring.size();
+  if ( n == 0 )
+    return 0.0;
+  const double x0 = x[ring[0] - 1];
+  const double y0 = y[ring[0] - 1];
+  double area = 0.0;
+  for ( size_t i = 0; i < n; ++i )
+  {
+    const int a = ring[i];
+    const int b = ring[( i + 1 ) % n];
+    area += ( x[a - 1] - x0 ) * ( y[b - 1] - y0 ) - ( x[b - 1] - x0 ) * ( y[a - 1] - y0 );
+  }
+  return 0.5 * area;
+}
+
+// Ray-casting point-in-polygon over an OPEN ring.
+static bool ipoboPointInPolygon( double px, double py,
+                                 const std::vector<int> &ring,
+                                 const std::vector<double> &x,
+                                 const std::vector<double> &y )
+{
+  bool inside = false;
+  const size_t n = ring.size();
+  size_t j = n - 1;
+  for ( size_t i = 0; i < n; ++i )
+  {
+    const double pxi = x[ring[i] - 1];
+    const double pyi = y[ring[i] - 1];
+    const double pxj = x[ring[j] - 1];
+    const double pyj = y[ring[j] - 1];
+    // the straddle test guarantees pyi != pyj, so the division is safe
+    if ( ( ( pyi > py ) != ( pyj > py ) ) &&
+         ( px < ( pxj - pxi ) * ( py - pyi ) / ( pyj - pyi ) + pxi ) )
+      inside = !inside;
+    j = i;
+  }
+  return inside;
+}
+
+// True when (px,py) lies exactly on a vertex or an edge of the OPEN ring.
+// The cross product is compared to zero exactly, on purpose: what has to be
+// caught here is a node of another contour placed at the very same coordinates
+// (zero-width weirs, a bank digitised twice), which come from the same array
+// and are therefore bit-identical, making the cross product exactly 0. A
+// tolerance would have to be relative to the edge length, and would start
+// treating nodes that merely run close to another contour as lying on it,
+// which changes the probe point chosen on a perfectly well defined mesh. The
+// case left out is a node sitting in the middle of another contour's edge
+// without sharing any of its nodes.
+static bool ipoboPointOnRing( double px, double py,
+                              const std::vector<int> &ring,
+                              const std::vector<double> &x,
+                              const std::vector<double> &y )
+{
+  const size_t n = ring.size();
+  for ( size_t i = 0; i < n; ++i )
+  {
+    const double ax = x[ring[i] - 1];
+    const double ay = y[ring[i] - 1];
+    const double bx = x[ring[( i + 1 ) % n] - 1];
+    const double by = y[ring[( i + 1 ) % n] - 1];
+    const double cross = ( bx - ax ) * ( py - ay ) - ( by - ay ) * ( px - ax );
+    if ( cross != 0.0 )
+      continue;
+    const double dot = ( px - ax ) * ( bx - ax ) + ( py - ay ) * ( by - ay );
+    if ( dot < 0.0 )
+      continue;
+    if ( dot <= ( bx - ax ) * ( bx - ax ) + ( by - ay ) * ( by - ay ) )
+      return true;
+  }
+  return false;
+}
+
+// First node of ringI that does not lie on ringJ, usable as a
+// point-in-polygon probe. Superimposed boundary nodes (e.g. zero-width
+// weirs) can place ringI's start exactly ON ringJ, where ray casting is
+// ill-defined. Returns -1 when every node of ringI lies on ringJ.
+static int ipoboRepresentative( const std::vector<int> &ringI,
+                                const std::vector<int> &ringJ,
+                                const std::vector<double> &x,
+                                const std::vector<double> &y )
+{
+  for ( const int node : ringI )
+    if ( !ipoboPointOnRing( x[node - 1], y[node - 1], ringJ, x, y ) )
+      return node;
+  return -1;
+}
+
+// Walk one closed loop from `start`, consuming edges from `neighbours`.
+// Returns the closed loop [start, ..., start] in `loopOut` and true on
+// success; false on a dead end or if `maxSteps` is exceeded.
+static bool ipoboWalkOneLoop( std::map<int, std::set<int>> &neighbours,
+                              int start,
+                              size_t maxSteps,
+                              std::vector<int> &loopOut )
+{
+  loopOut.clear();
+  auto eraseEdge = [&neighbours]( int a, int b )
+  {
+    auto it = neighbours.find( a );
+    if ( it != neighbours.end() )
+    {
+      it->second.erase( b );
+      if ( it->second.empty() )
+        neighbours.erase( it );
+    }
+  };
+
+  auto itStart = neighbours.find( start );
+  if ( itStart == neighbours.end() || itStart->second.empty() )
+    return false;
+
+  loopOut.push_back( start );
+  int nxt = *itStart->second.begin();
+  eraseEdge( start, nxt );
+  eraseEdge( nxt, start );
+
+  size_t steps = 0;
+  while ( nxt != start )
+  {
+    loopOut.push_back( nxt );
+    if ( ++steps > maxSteps )
+      return false;
+    auto it = neighbours.find( nxt );
+    if ( it == neighbours.end() || it->second.empty() )
+      return false;  // dead end
+    const int newNxt = *it->second.begin();
+    eraseEdge( nxt, newNxt );
+    eraseEdge( newNxt, nxt );
+    nxt = newNxt;
+  }
+  loopOut.push_back( start );  // close the ring
+  return true;
+}
+
+// Iterative DFS over the containment forest; children[] must already be
+// sorted in the desired visit order.
+static void ipoboDfs( int root,
+                      const std::vector<std::vector<int>> &children,
+                      std::vector<int> &orderOut )
+{
+  std::vector<int> stack( 1, root );
+  while ( !stack.empty() )
+  {
+    const int node = stack.back();
+    stack.pop_back();
+    orderOut.push_back( node );
+    // push in reverse so children pop in ascending key order
+    for ( auto it = children[node].rbegin(); it != children[node].rend(); ++it )
+      stack.push_back( *it );
+  }
+}
+
+// Error thrown when the boundary numbering cannot be computed. Node ids in the
+// message are the 1-based ones of the SELAFIN connectivity.
+static MDAL::Error ipoboError( const std::string &reason )
+{
+  return MDAL::Error( MDAL_Status::Err_IncompatibleMesh,
+                      "Unable to build the IPOBO boundary numbering: " + reason );
+}
+
+// Computes the IPOBO array from the mesh connectivity and vertex coordinates:
+//   IPOBO[i] = 0 for interior nodes,
+//   IPOBO[i] = N (consecutive, starting at 1) for boundary nodes.
+//
+// Boundary extraction and contour nesting follow the approach of opentelemac's
+// pretel/extract_contour.py: boundary edges are the edges used by exactly one
+// face, each contour is walked from its south-west node, external contours are
+// oriented CCW and holes CW. The consecutive IPOBO numbering itself — depth
+// parity for arbitrarily nested contours, containment forest and DFS emission
+// order — is original to MDAL. The numbering is checked against the arrays
+// stored by Janet, Telemac-2D, Fudaa-Prepro and the Malpasset reference file
+// by the IPOBOMatchesTelemacFiles test; those files all have a single contour,
+// so the ordering of several contours is MDAL's own convention, described in
+// docs/source/drivers/selafin.rst.
+//
+// Connectivity indices are 1-based (SELAFIN convention); MDAL writes 2D only.
+// Returns a 0-indexed vector sized like x, all zeros for a mesh without faces
+// or without any boundary. Throws Err_IncompatibleMesh when the mesh has a
+// boundary that cannot be numbered: a file carrying a wrong or empty IPOBO is
+// unusable for Telemac, so the save is refused instead.
+static std::vector<int> computeIPOBO(
+  const std::vector<int> &connectivity,  // 1-based vertex indices
+  const std::vector<double> &x,
+  const std::vector<double> &y,
+  size_t verticesPerFace )
+{
+  const size_t verticesCount = x.size();
+
+  std::vector<int> ipobo( verticesCount, 0 );
+
+  // --- Pre-validation: triangles only, well-formed 1-based connectivity ---
+  // computeIPOBO is a free-standing helper; guard against malformed input so
+  // x[node-1] / ipobo[node-1] can never read or write out of bounds.
+  if ( connectivity.empty() )
+    return ipobo;  // no faces — no boundary to build (zeros, no error)
+  if ( verticesPerFace != 3 )
+    throw ipoboError( "Selafin 2D meshes are made of triangles only" );
+  if ( connectivity.size() % verticesPerFace != 0 || x.size() != y.size() )
+    throw ipoboError( "connectivity table and coordinate arrays have inconsistent sizes" );
+  for ( const int node : connectivity )
+    if ( node < 1 || static_cast<size_t>( node ) > verticesCount )
+      throw ipoboError( "vertex index " + std::to_string( node ) + " is out of range" );
+
+  const size_t facesCount = connectivity.size() / verticesPerFace;
+
+  // --- Canonical edges: sorted packed (min,max) keys ---
+  std::vector<long long> edges;
+  edges.reserve( connectivity.size() );
+  for ( size_t f = 0; f < facesCount; ++f )
+  {
+    for ( size_t v = 0; v < verticesPerFace; ++v )
+    {
+      const long long a = connectivity[f * verticesPerFace + v];
+      const long long b = connectivity[f * verticesPerFace + ( v + 1 ) % verticesPerFace];
+      edges.push_back( ( std::min( a, b ) << 32 ) | std::max( a, b ) );
+    }
+  }
+  std::sort( edges.begin(), edges.end() );
+
+  // --- Boundary adjacency (edges used by exactly one face) ---
+  // Ordered map + ordered set: deterministic SW start and *begin() walk choice.
+  std::map<int, std::set<int>> neighbours;
+  size_t boundaryEdgeCount = 0;
+  for ( size_t i = 0; i < edges.size(); )
+  {
+    size_t j = i + 1;
+    while ( j < edges.size() && edges[j] == edges[i] )
+      ++j;
+    const int a = static_cast<int>( edges[i] >> 32 );
+    const int b = static_cast<int>( edges[i] & 0xffffffffLL );
+    if ( j - i == 1 )
+    {
+      neighbours[a].insert( b );
+      neighbours[b].insert( a );
+      ++boundaryEdgeCount;
+    }
+    else if ( j - i > 2 )
+    {
+      // an edge shared by more than two faces is not a boundary edge and not
+      // an interior one either: the boundary would be silently wrong
+      throw ipoboError( "edge " + std::to_string( a ) + "-" + std::to_string( b ) +
+                        " is shared by " + std::to_string( j - i ) + " faces, 2 at most are allowed" );
+    }
+    i = j;
+  }
+
+  if ( neighbours.empty() )
+    return ipobo;  // closed surface / no boundary — zeros, NO warning
+
+  // Manifold invariant: every boundary node must have degree exactly 2, so the
+  // boundary decomposes into disjoint simple cycles and the edge-consuming walk
+  // can never close a wrong sub-loop. Pinch points break this invariant and are
+  // deliberately rejected rather than risk a mis-traced boundary.
+  for ( const auto &kv : neighbours )
+    if ( kv.second.size() != 2 )
+      throw ipoboError( "boundary node " + std::to_string( kv.first ) + " is the end of " +
+                        std::to_string( kv.second.size() ) + " boundary edges instead of 2 (pinch point)" );
+
+  // --- Trace every closed boundary loop (consumes `neighbours`) ---
+  // Every contour starts at its south-west node: minimum (x+y), ties broken by
+  // the smallest node id. Sorting the boundary nodes by that key once and
+  // walking the list in order picks the same node as a rescan of `neighbours`
+  // for every contour, in O(B log B) instead of O(contours * B).
+  std::vector<int> southwestOrder;
+  southwestOrder.reserve( neighbours.size() );
+  for ( const auto &kv : neighbours )
+    southwestOrder.push_back( kv.first );
+  std::sort( southwestOrder.begin(), southwestOrder.end(), [&x, &y]( int a, int b )
+  {
+    const double ka = x[a - 1] + y[a - 1];
+    const double kb = x[b - 1] + y[b - 1];
+    if ( ka != kb )
+      return ka < kb;
+    return a < b;
+  } );
+  size_t southwestPos = 0;
+
+  const size_t maxSteps = boundaryEdgeCount + 1;
+  std::vector<std::vector<int>> loops;  // each CLOSED [start..start]
+  while ( !neighbours.empty() )
+  {
+    while ( southwestPos < southwestOrder.size() &&
+            neighbours.find( southwestOrder[southwestPos] ) == neighbours.end() )
+      ++southwestPos;
+    if ( southwestPos == southwestOrder.size() )  // unreachable: `neighbours` is not empty
+      throw ipoboError( "the boundary contours could not be enumerated" );
+    const int start = southwestOrder[southwestPos];
+    std::vector<int> loop;
+    if ( !ipoboWalkOneLoop( neighbours, start, maxSteps, loop ) )
+      throw ipoboError( "the boundary contour starting at node " + std::to_string( start ) +
+                        " does not close" );
+    loops.push_back( std::move( loop ) );
+  }
+
+  const size_t nLoops = loops.size();
+
+  // --- Open rings (drop the closing duplicate) ---
+  // `rings` keep the WALK orientation and are never reversed, so rings[i][0] is
+  // always the south-west start node — the point-in-polygon probe base for the
+  // depth and parent tests, and the south-west key of the DFS ordering.
+  // (Orientation reverses the CLOSED loops[] used only for numbering, which
+  // keeps loops[i][0] == rings[i][0].)
+  std::vector<std::vector<int>> rings( nLoops );
+  for ( size_t i = 0; i < nLoops; ++i )
+    rings[i].assign( loops[i].begin(), loops[i].end() - 1 );
+
+  // Ring bounding boxes. Boundary contours of a manifold mesh never cross, so a
+  // contour lies inside another one only if its bounding box does too: four
+  // comparisons reject most pairs before any point-in-polygon work. Contours
+  // that are fully superimposed, the case ipoboRepresentative rejects, always
+  // pass the test, so no error can slip through the prefilter.
+  struct IpoboBBox
+  {
+    double minX, maxX, minY, maxY;
+  };
+  std::vector<IpoboBBox> bbox( nLoops );
+  for ( size_t i = 0; i < nLoops; ++i )
+  {
+    IpoboBBox b { std::numeric_limits<double>::max(), std::numeric_limits<double>::lowest(),
+                  std::numeric_limits<double>::max(), std::numeric_limits<double>::lowest() };
+    for ( const int node : rings[i] )
+    {
+      b.minX = std::min( b.minX, x[node - 1] );
+      b.maxX = std::max( b.maxX, x[node - 1] );
+      b.minY = std::min( b.minY, y[node - 1] );
+      b.maxY = std::max( b.maxY, y[node - 1] );
+    }
+    bbox[i] = b;
+  }
+  auto bboxInside = [&bbox]( size_t i, size_t j )
+  {
+    return bbox[i].minX >= bbox[j].minX && bbox[i].maxX <= bbox[j].maxX &&
+           bbox[i].minY >= bbox[j].minY && bbox[i].maxY <= bbox[j].maxY;
+  };
+
+  // --- Nesting depth via point-in-polygon (before any orientation) ---
+  // insideOf[i] collects, in ascending index order, every contour that encloses
+  // contour i, so that the containment forest below needs no second pass.
+  std::vector<int> depth( nLoops, 0 );
+  std::vector<std::vector<int>> insideOf( nLoops );
+  for ( size_t i = 0; i < nLoops; ++i )
+  {
+    for ( size_t j = 0; j < nLoops; ++j )
+    {
+      if ( i == j || !bboxInside( i, j ) )
+        continue;
+      const int rep = ipoboRepresentative( rings[i], rings[j], x, y );
+      if ( rep < 0 )
+        throw ipoboError( "the contours starting at nodes " + std::to_string( rings[i][0] ) +
+                          " and " + std::to_string( rings[j][0] ) + " are fully superimposed" );
+      if ( ipoboPointInPolygon( x[rep - 1], y[rep - 1], rings[j], x, y ) )
+      {
+        ++depth[i];
+        insideOf[i].push_back( static_cast<int>( j ) );
+      }
+    }
+  }
+
+  // --- Orient by depth parity (even = external = CCW; odd = island = CW) ---
+  // Reverse the CLOSED loops[i] (numbering direction only); rings[] stay frozen.
+  for ( size_t i = 0; i < nLoops; ++i )
+  {
+    if ( loops[i].size() <= 3 )
+      continue;  // unreachable: the degree-2 check makes the minimum cycle 3 nodes (closed size 4); kept as guard
+    const bool ccw = ipoboSignedArea( rings[i], x, y ) > 0.0;
+    const bool even = ( depth[i] % 2 == 0 );
+    if ( ( even && !ccw ) || ( !even && ccw ) )
+      std::reverse( loops[i].begin(), loops[i].end() );
+  }
+
+  // --- Containment forest (parent = deepest enclosing loop) ---
+  // Tie-break: first j in ascending index order at the max qualifying depth.
+  std::vector<std::vector<int>> children( nLoops );
+  for ( size_t i = 0; i < nLoops; ++i )
+  {
+    if ( depth[i] == 0 )
+      continue;
+    int bestParent = -1;
+    int bestDepth = -1;
+    for ( const int j : insideOf[i] )
+    {
+      if ( depth[j] >= depth[i] || depth[j] <= bestDepth )
+        continue;
+      bestDepth = depth[j];
+      bestParent = j;
+    }
+    if ( bestParent >= 0 )
+      children[bestParent].push_back( static_cast<int>( i ) );
+  }
+
+  // --- DFS order; roots (depth 0) and children sorted by SW key ---
+  auto lessByKey = [&rings, &x, &y]( int a, int b )
+  {
+    const int na = rings[a][0];
+    const int nb = rings[b][0];
+    const double ka = x[na - 1] + y[na - 1];
+    const double kb = x[nb - 1] + y[nb - 1];
+    if ( ka != kb )
+      return ka < kb;
+    return na < nb;
+  };
+
+  std::vector<int> roots;
+  for ( size_t i = 0; i < nLoops; ++i )
+    if ( depth[i] == 0 )
+      roots.push_back( static_cast<int>( i ) );
+  std::sort( roots.begin(), roots.end(), lessByKey );
+  for ( auto &kids : children )
+    std::sort( kids.begin(), kids.end(), lessByKey );
+
+  std::vector<int> order;
+  order.reserve( nLoops );
+  for ( const int r : roots )
+    ipoboDfs( r, children, order );
+
+  // every loop must be reachable through the forest; a loop with depth > 0 but
+  // no qualifying parent would otherwise be silently left unnumbered
+  if ( order.size() != nLoops )
+  {
+    std::vector<bool> numbered( nLoops, false );
+    for ( const int idx : order )
+      numbered[idx] = true;
+    size_t orphan = 0;
+    while ( orphan < nLoops && numbered[orphan] )
+      ++orphan;
+    throw ipoboError( "the contour starting at node " + std::to_string( rings[orphan][0] ) +
+                      " could not be placed in the contour nesting" );
+  }
+
+  // --- Consecutive 1-based numbering in traversal order ---
+  // Yield each oriented loop without its closing duplicate (loops[idx][:-1]).
+  int id = 0;
+  for ( const int idx : order )
+    for ( size_t k = 0; k + 1 < loops[idx].size(); ++k )
+      ipobo[loops[idx][k] - 1] = ++id;
+
+  return ipobo;
+}
+
 // Everything that has to be READ from the mesh before the output file is
 // opened: a MeshSelafin reads its frame lazily from its own source file,
 // which may be the file about to be written.
@@ -1077,8 +1531,7 @@ static SelafinMeshFrame collectMeshFrame( MDAL::Mesh *mesh )
   readConnectivity( mesh, frame.facesCount, frame.verticesPerFace, frame.connectivity );
   readVerticesXY( mesh, frame.x, frame.y );
 
-  // IPOBO filled with 0
-  frame.ipobo = std::vector<int>( frame.verticesCount, 0 );
+  frame.ipobo = computeIPOBO( frame.connectivity, frame.x, frame.y, frame.verticesPerFace );
 
   return frame;
 }
