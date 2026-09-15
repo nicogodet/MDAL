@@ -714,6 +714,37 @@ MDAL::Statistics MDAL::ensureStatistics( DatasetGroup *group )
   return stats;
 }
 
+MDAL::Statistics MDAL::calculateStatisticsApprox( DatasetGroup *grp, size_t sampleCount )
+{
+  if ( !grp )
+    return Statistics();
+
+  const size_t n = grp->datasets.size();
+  // a single sample has no useful worst case: the first timestep of a
+  // hydraulic model is usually a uniform initial condition, so one sample can
+  // report [0, 0] for a group whose exact range is [0, 7.6]. Sample both ends.
+  if ( sampleCount == 1 )
+    sampleCount = 2;
+  if ( sampleCount == 0 || sampleCount >= n )
+    return ensureStatistics( grp );
+
+  Statistics ret;
+  for ( size_t i = 0; i < sampleCount; ++i )
+  {
+    // evenly spaced by dataset index, endpoints included; indices are
+    // strictly increasing since 2 <= sampleCount < n
+    const size_t idx = ( i * ( n - 1 ) ) / ( sampleCount - 1 );
+    combineStatistics( ret, ensureStatistics( grp->datasets[idx].get() ) );
+  }
+
+  // a sample without any valid value (e.g. domain dry at the sampled times)
+  // would be indistinguishable from an error: fall back to the exact range
+  if ( std::isnan( ret.minimum ) )
+    return ensureStatistics( grp );
+
+  return ret;
+}
+
 MDAL::Statistics MDAL::calculateStatistics( std::shared_ptr<Dataset> dataset )
 {
   return calculateStatistics( dataset.get() );

@@ -19,6 +19,7 @@ namespace
   const int kDatasetCount = 10;
   const int kPeakIndex = 5;
   const double kPeakValue = 1000.0;
+  const double kUniformPeak = 7.5;
 
   // Saves a copy of the SELAFIN example mesh to \a savedFile, reloads it and
   // opens a new scalar vertex dataset group on it, left in edit mode so the
@@ -70,6 +71,28 @@ namespace
     return mesh;
   }
 
+  // Build a two-timestep group shaped like a real hydraulic run: a uniformly
+  // zero initial condition followed by a timestep reaching kUniformPeak.
+  MDAL_MeshH buildUniformFirstDatasetMesh( const std::string &savedFile )
+  {
+    MDAL_DatasetGroupH g = nullptr;
+    MDAL_MeshH mesh = openMeshWithNewGroup( savedFile, &g );
+
+    const size_t v_count = MDAL_M_vertexCount( mesh );
+    std::vector<double> initial( v_count, 0.0 );
+    MDAL_G_addDataset( g, 0.0, initial.data(), nullptr );
+    EXPECT_EQ( MDAL_LastStatus(), MDAL_Status::None );
+
+    std::vector<double> flooded( v_count, 0.0 );
+    flooded[v_count / 2] = kUniformPeak;
+    MDAL_G_addDataset( g, 1.0, flooded.data(), nullptr );
+    EXPECT_EQ( MDAL_LastStatus(), MDAL_Status::None );
+
+    MDAL_G_closeEditMode( g );
+    EXPECT_EQ( MDAL_LastStatus(), MDAL_Status::None );
+    return mesh;
+  }
+
   // Empties \a path in place. Any handle already open on it then reads a file
   // that can no longer serve the data it used to, the way a result file being
   // rewritten by a running solver does.
@@ -110,6 +133,122 @@ namespace
   }
 }
 
+TEST( MeshApproxStatisticsTest, ExactFallbacksEqualExact )
+{
+  std::string file = tmp_file( "/approx_stats_fallback.slf" );
+  MDAL_MeshH m = buildMultiTimestepMesh( file );
+  ASSERT_NE( m, nullptr );
+
+  MDAL_DatasetGroupH g = lastGroup( m );
+  ASSERT_NE( g, nullptr );
+
+  double minE = NAN, maxE = NAN;
+  MDAL_G_minimumMaximum( g, &minE, &maxE );
+  EXPECT_DOUBLE_EQ( kPeakValue, maxE );
+
+  // sampleCount 0, negative, == count and > count all fall back to exact
+  for ( int sampleCount : { 0, -5, kDatasetCount, 999 } )
+  {
+    double minA = NAN, maxA = NAN;
+    MDAL_G_minimumMaximumApprox( g, sampleCount, &minA, &maxA );
+    EXPECT_DOUBLE_EQ( minE, minA ) << "sampleCount=" << sampleCount;
+    EXPECT_DOUBLE_EQ( maxE, maxA ) << "sampleCount=" << sampleCount;
+  }
+
+  MDAL_CloseMesh( m );
+}
+
+TEST( MeshApproxStatisticsTest, SampleCountOneSamplesBothEndpoints )
+{
+  // A sampleCount of 1 is raised to 2, so the first and the last dataset are
+  // sampled: for n=10 that is index 0 (constant 0) and index 9 (constant 9).
+  // The outlier at index 5 is still missed.
+  std::string file = tmp_file( "/approx_stats_sc1.slf" );
+  MDAL_MeshH m = buildMultiTimestepMesh( file );
+  ASSERT_NE( m, nullptr );
+
+  MDAL_DatasetGroupH g = lastGroup( m );
+  ASSERT_NE( g, nullptr );
+
+  double minA = NAN, maxA = NAN;
+  MDAL_G_minimumMaximumApprox( g, 1, &minA, &maxA );
+  EXPECT_DOUBLE_EQ( 0.0, minA );
+  EXPECT_DOUBLE_EQ( static_cast<double>( kDatasetCount - 1 ), maxA );
+
+  MDAL_CloseMesh( m );
+}
+
+TEST( MeshApproxStatisticsTest, SampleCountOneCoversGroupWithUniformFirstDataset )
+{
+  // Regression: a two-timestep group whose first dataset is a uniform initial
+  // condition. Sampling a single middle dataset used to return the degenerate
+  // range [0, 0] while the exact range is [0, kUniformPeak].
+  std::string file = tmp_file( "/approx_stats_uniform_first.slf" );
+  MDAL_MeshH m = buildUniformFirstDatasetMesh( file );
+  ASSERT_NE( m, nullptr );
+
+  MDAL_DatasetGroupH g = lastGroup( m );
+  ASSERT_NE( g, nullptr );
+  ASSERT_EQ( 2, MDAL_G_datasetCount( g ) );
+
+  double minA = NAN, maxA = NAN;
+  MDAL_G_minimumMaximumApprox( g, 1, &minA, &maxA );
+  EXPECT_DOUBLE_EQ( 0.0, minA );
+  EXPECT_DOUBLE_EQ( kUniformPeak, maxA );
+
+  double minE = NAN, maxE = NAN;
+  MDAL_G_minimumMaximum( g, &minE, &maxE );
+  EXPECT_DOUBLE_EQ( minE, minA );
+  EXPECT_DOUBLE_EQ( maxE, maxA );
+
+  MDAL_CloseMesh( m );
+}
+
+TEST( MeshApproxStatisticsTest, SampleCountThreeMissesMiddleOutlier )
+{
+  // For n=10 and sampleCount=3 the chosen indices are {0, 4, 9}
+  // — the outlier at index 5 must be missed.
+  std::string file = tmp_file( "/approx_stats_sc3.slf" );
+  MDAL_MeshH m = buildMultiTimestepMesh( file );
+  ASSERT_NE( m, nullptr );
+
+  MDAL_DatasetGroupH g = lastGroup( m );
+  ASSERT_NE( g, nullptr );
+
+  double minE = NAN, maxE = NAN, minA = NAN, maxA = NAN;
+  MDAL_G_minimumMaximum( g, &minE, &maxE );
+  MDAL_G_minimumMaximumApprox( g, 3, &minA, &maxA );
+
+  EXPECT_DOUBLE_EQ( kPeakValue, maxE );  // exact captures the outlier
+  EXPECT_LT( maxA, kPeakValue );         // approximate misses it
+  EXPECT_LE( minE, minA );               // approximate range is contained in exact range
+  EXPECT_GE( maxE, maxA );
+
+  MDAL_CloseMesh( m );
+}
+
+TEST( MeshApproxStatisticsTest, ExactCacheUntouchedAfterApproximate )
+{
+  std::string file = tmp_file( "/approx_stats_cache.slf" );
+  MDAL_MeshH m = buildMultiTimestepMesh( file );
+  ASSERT_NE( m, nullptr );
+
+  MDAL_DatasetGroupH g = lastGroup( m );
+  ASSERT_NE( g, nullptr );
+
+  // Call approximate first
+  double minA = NAN, maxA = NAN;
+  MDAL_G_minimumMaximumApprox( g, 3, &minA, &maxA );
+  EXPECT_LT( maxA, kPeakValue );
+
+  // Exact must still return the true range
+  double minE = NAN, maxE = NAN;
+  MDAL_G_minimumMaximum( g, &minE, &maxE );
+  EXPECT_DOUBLE_EQ( kPeakValue, maxE );
+
+  MDAL_CloseMesh( m );
+}
+
 TEST( MeshLoadFlagsTest, SkipStatisticsThenLazyExact )
 {
   // Build a multi-timestep selafin first (writes through the addDataset edit
@@ -127,6 +266,13 @@ TEST( MeshLoadFlagsTest, SkipStatisticsThenLazyExact )
   ASSERT_GE( MDAL_M_datasetGroupCount( m ), 1 );
   MDAL_DatasetGroupH g = lastGroup( m );
   ASSERT_NE( g, nullptr );
+
+  // Approximate min/max computes only on a sample of timesteps; the outlier
+  // dataset (index 5) is missed when sampleCount=3.
+  double minA = NAN, maxA = NAN;
+  MDAL_G_minimumMaximumApprox( g, 3, &minA, &maxA );
+  EXPECT_FALSE( std::isnan( maxA ) );
+  EXPECT_LT( maxA, kPeakValue );
 
   // Exact (lazy) computes on first access and caches: must return the outlier.
   double minE = NAN, maxE = NAN;
@@ -184,6 +330,11 @@ TEST( MeshLoadFlagsTest, LoadDatasetsWithFlagsSkipsStatistics )
   MDAL_DatasetGroupH g = lastGroup( m );
   ASSERT_NE( g, nullptr );
 
+  double minA = NAN, maxA = NAN;
+  MDAL_G_minimumMaximumApprox( g, 3, &minA, &maxA );
+  EXPECT_FALSE( std::isnan( maxA ) );
+  EXPECT_LT( maxA, kPeakValue );
+
   double minE = NAN, maxE = NAN;
   MDAL_G_minimumMaximum( g, &minE, &maxE );
   EXPECT_DOUBLE_EQ( kPeakValue, maxE );
@@ -224,6 +375,12 @@ TEST( MeshLoadFlagsTest, UnreadableFileReportsNaNAndIsNotCached )
 
     MDAL_ResetStatus();
     MDAL_D_minimumMaximum( ds, &min, &max );
+    EXPECT_TRUE( std::isnan( min ) ) << "attempt " << attempt;
+    EXPECT_TRUE( std::isnan( max ) ) << "attempt " << attempt;
+    EXPECT_NE( MDAL_LastStatus(), MDAL_Status::None ) << "attempt " << attempt;
+
+    MDAL_ResetStatus();
+    MDAL_G_minimumMaximumApprox( g, 2, &min, &max );
     EXPECT_TRUE( std::isnan( min ) ) << "attempt " << attempt;
     EXPECT_TRUE( std::isnan( max ) ) << "attempt " << attempt;
     EXPECT_NE( MDAL_LastStatus(), MDAL_Status::None ) << "attempt " << attempt;
@@ -313,6 +470,11 @@ TEST( MeshApproxStatisticsTest, EditModeGroupFollowsTheDatasetsAddedSoFar )
   EXPECT_DOUBLE_EQ( -50.0, min );
   EXPECT_DOUBLE_EQ( 2.0, max );
 
+  double minA = NAN, maxA = NAN;
+  MDAL_G_minimumMaximumApprox( g, 2, &minA, &maxA );
+  EXPECT_LE( min, minA );
+  EXPECT_GE( max, maxA );
+
   MDAL_G_closeEditMode( g );
   EXPECT_EQ( MDAL_LastStatus(), MDAL_Status::None );
   EXPECT_FALSE( MDAL_G_isInEditMode( g ) );
@@ -361,6 +523,14 @@ TEST( MeshApproxStatisticsTest, GroupWithASingleDataset )
     EXPECT_DOUBLE_EQ( 0.0, min ) << "flags=" << flags;
     EXPECT_DOUBLE_EQ( 6.0, max ) << "flags=" << flags;
 
+    // every sampleCount falls back to the exact range of the only dataset
+    for ( int sampleCount : { 1, 3, -5 } )
+    {
+      double minA = NAN, maxA = NAN;
+      MDAL_G_minimumMaximumApprox( gg, sampleCount, &minA, &maxA );
+      EXPECT_DOUBLE_EQ( min, minA ) << "flags=" << flags << " sampleCount=" << sampleCount;
+      EXPECT_DOUBLE_EQ( max, maxA ) << "flags=" << flags << " sampleCount=" << sampleCount;
+    }
     MDAL_CloseMesh( reloaded );
   }
 }
@@ -378,6 +548,11 @@ TEST( MeshApproxStatisticsTest, GroupWithoutAnyDataset )
   MDAL_G_minimumMaximum( g, &min, &max );
   EXPECT_TRUE( std::isnan( min ) );
   EXPECT_TRUE( std::isnan( max ) );
+
+  double minA = 42.0, maxA = 42.0;
+  MDAL_G_minimumMaximumApprox( g, 3, &minA, &maxA );
+  EXPECT_TRUE( std::isnan( minA ) );
+  EXPECT_TRUE( std::isnan( maxA ) );
 
   MDAL_G_closeEditMode( g );
   double minC = 42.0, maxC = 42.0;

@@ -165,6 +165,16 @@ namespace MDAL
   Statistics calculateStatistics( std::shared_ptr<DatasetGroup> grp );
   Statistics calculateStatistics( DatasetGroup *grp );
 
+  //! Calculates approximate statistics for dataset group from a sample of
+  //! \a sampleCount evenly-spaced datasets (spaced by dataset index, not by
+  //! time; endpoints included). A \a sampleCount of 1 is raised to 2 so that
+  //! both endpoints are always sampled. When \a sampleCount is 0 or greater
+  //! or equal to the dataset count, falls
+  //! back to the exact statistics computation. If a sampled dataset has no cached statistics
+  //! yet (e.g. loaded with MDAL_LF_SkipStatistics) they are computed on the
+  //! fly and cached on the dataset, so a later exact call benefits from them.
+  Statistics calculateStatisticsApprox( DatasetGroup *grp, size_t sampleCount );
+
   //! Calculates statistics for dataset. A read that stops short of
   //! valuesCount() is not reported: the returned range then only covers the
   //! values that could be read. Use ensureStatistics() to cache a result.

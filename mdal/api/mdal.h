@@ -699,6 +699,36 @@ MDAL_EXPORT int MDAL_G_maximumVerticalLevelCount( MDAL_DatasetGroupH group );
 MDAL_EXPORT void MDAL_G_minimumMaximum( MDAL_DatasetGroupH group, double *min, double *max );
 
 /**
+ * Returns an approximate minimum and maximum of the group, computed from a sample
+ * of \a sampleCount evenly-spaced datasets, endpoints always included. Useful
+ * to avoid scanning every timestep on initial display, when an exact range is
+ * not required.
+ *
+ * The sample is spaced evenly by dataset index within the group, not by time:
+ * with a variable output timestep the sampled times are not evenly spaced.
+ *
+ * A \a sampleCount of 1 is treated as 2, so that both the first and the last
+ * dataset are sampled. A single sample has no useful worst case: the first
+ * timestep of a hydraulic model is typically a uniform initial condition, and
+ * sampling it alone reports a degenerate range such as [0, 0].
+ *
+ * The computation falls back to the exact range of MDAL_G_minimumMaximum()
+ * (cached as such) when \a sampleCount is 0 (or negative) or greater or equal
+ * to the dataset count of the group, and when the sample contains no valid
+ * value (e.g. a domain entirely dry at the sampled times).
+ *
+ * The approximate values are never cached as the group statistics, so a later
+ * call to MDAL_G_minimumMaximum will still compute and return the exact range.
+ * The statistics of the sampled datasets themselves ARE cached, making repeated
+ * calls cheap and pre-warming a later exact computation.
+ *
+ * Returns NaN on error
+ *
+ * \since MDAL 1.4.0
+ */
+MDAL_EXPORT void MDAL_G_minimumMaximumApprox( MDAL_DatasetGroupH group, int sampleCount, double *min, double *max );
+
+/**
  * Adds empty (new) dataset to the group
  * This increases dataset group count MDAL_G_datasetCount() by 1
  *

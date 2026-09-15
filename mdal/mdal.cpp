@@ -993,6 +993,33 @@ void MDAL_G_minimumMaximum( MDAL_DatasetGroupH group, double *min, double *max )
   *max = stats.maximum;
 }
 
+void MDAL_G_minimumMaximumApprox( MDAL_DatasetGroupH group, int sampleCount, double *min, double *max )
+{
+  if ( !min || !max )
+  {
+    MDAL::Log::error( MDAL_Status::Err_InvalidData, "Passed pointers min or max are not valid (null)" );
+    return;
+  }
+
+  if ( !group )
+  {
+    MDAL::Log::error( MDAL_Status::Err_IncompatibleDataset, "Dataset is not valid (null)" );
+    *min = NODATA;
+    *max = NODATA;
+    return;
+  }
+
+  if ( sampleCount < 0 )
+    sampleCount = 0;
+
+  MDAL::DatasetGroup *g = static_cast< MDAL::DatasetGroup * >( group );
+  const size_t samples = static_cast<size_t>( sampleCount );
+  const MDAL::Statistics stats = callGuarded( "Failed to compute approximate group statistics", MDAL::Statistics(),
+                                 [g, samples] { return MDAL::calculateStatisticsApprox( g, samples ); } );
+  *min = stats.minimum;
+  *max = stats.maximum;
+}
+
 MDAL_DatasetH MDAL_G_addDataset( MDAL_DatasetGroupH group, double time, const double *values, const int *active )
 {
   if ( !group )
