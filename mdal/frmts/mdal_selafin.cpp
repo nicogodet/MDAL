@@ -108,9 +108,11 @@ void MDAL::SelafinFile::parseMeshFrame()
       - if IPARAM (9) != 0: the value corresponds to the number of interface
       points (in parallel),
 
-      - if IPARAM(8) or IPARAM(9) != 0: the array IPOBO below is replaced
-      by the array KNOLG (total initial number of points). All the other
-      numbers are local to the sub-domain, including IKLE
+      - if IPARAM(9) != 0: the array IPOBO below is replaced by the array
+      KNOLG (total initial number of points). All the other numbers are local
+      to the sub-domain, including IKLE. (The manual reads "IPARAM(8) or
+      IPARAM(9)", but serial Telemac v7 and later write IPARAM(8) = NPTFR
+      next to a real IPOBO, see tests/data/slf/test_sd_7.slf)
   */
   mParameters = readIntArr( 10 );
   mXOrigin = static_cast<double>( mParameters[2] );
@@ -254,6 +256,44 @@ std::unique_ptr<MDAL::Mesh> MDAL::SelafinFile::createMesh( const std::string &fi
   populateDataset( mesh.get(), std::move( reader ) );
 
   return mesh;
+}
+
+std::vector<int> MDAL::SelafinFile::ipoboArray()
+{
+  if ( !mParsed )
+    parseFile();
+
+  // The record at this position holds KNOLG instead of IPOBO on a partitioned
+  // sub-domain file, that is when IPARAM(9) = NPTIR != 0. IPARAM(8) = NPTFR is
+  // also written by serial Telemac v7 and later, whose record IS a real IPOBO,
+  // so it must not disqualify the array.
+  if ( mParameters.size() < 9 || mParameters[8] != 0 )
+    return std::vector<int>();
+
+  std::vector<int> ipobo = readIntArr( mIPOBOStreamPosition, 0, mVerticesCount );
+
+  // Only a genuine boundary numbering can be reused: its non-zero entries must
+  // be exactly the permutation 1..NPTFR, and match IPARAM(8) when that one is
+  // set. This also rejects a KNOLG array on a file that leaves IPARAM(9) unset,
+  // the all-zero arrays written by older MDAL versions, and files whose IPOBO
+  // was written as something else entirely.
+  std::vector<int> numbering;
+  numbering.reserve( ipobo.size() );
+  for ( const int value : ipobo )
+    if ( value != 0 )
+      numbering.push_back( value );
+
+  if ( numbering.empty() )
+    return std::vector<int>();
+  if ( mParameters[7] != 0 && static_cast<size_t>( mParameters[7] ) != numbering.size() )
+    return std::vector<int>();
+
+  std::sort( numbering.begin(), numbering.end() );
+  for ( size_t i = 0; i < numbering.size(); ++i )
+    if ( numbering[i] != static_cast<int>( i + 1 ) )
+      return std::vector<int>();
+
+  return ipobo;
 }
 
 void MDAL::SelafinFile::populateDataset( MDAL::Mesh *mesh, const std::string &fileName )
@@ -1508,8 +1548,8 @@ static std::vector<int> computeIPOBO(
 }
 
 // Everything that has to be READ from the mesh before the output file is
-// opened: a MeshSelafin reads its frame lazily from its own source file,
-// which may be the file about to be written.
+// opened: a MeshSelafin reads its frame and its IPOBO lazily from its own
+// source file, which may be the file about to be written.
 struct SelafinMeshFrame
 {
   size_t verticesCount = 0;
@@ -1528,10 +1568,32 @@ static SelafinMeshFrame collectMeshFrame( MDAL::Mesh *mesh )
   frame.verticesCount = mesh->verticesCount();
   frame.facesCount = mesh->facesCount();
 
+  // Reuse the IPOBO from disk when saving a MeshSelafin: its frame cannot be
+  // modified through MDAL (Mesh::addVertices/addFaces are no-ops on
+  // non-editable meshes), so the source topology always matches. ipoboArray()
+  // returns an empty array unless the stored one is a genuine boundary
+  // numbering, and an unreadable record simply falls back to the compute path.
+  std::vector<int> cachedIpobo;
+  if ( auto *meshSlf = dynamic_cast<MDAL::MeshSelafin *>( mesh ) )
+  {
+    try
+    {
+      cachedIpobo = meshSlf->ipoboArray();
+    }
+    catch ( MDAL::Error & )
+    {
+      cachedIpobo.clear();
+    }
+  }
+  const bool cachedUsable = cachedIpobo.size() == frame.verticesCount;
+
   readConnectivity( mesh, frame.facesCount, frame.verticesPerFace, frame.connectivity );
   readVerticesXY( mesh, frame.x, frame.y );
 
-  frame.ipobo = computeIPOBO( frame.connectivity, frame.x, frame.y, frame.verticesPerFace );
+  if ( cachedUsable )
+    frame.ipobo = std::move( cachedIpobo );
+  else
+    frame.ipobo = computeIPOBO( frame.connectivity, frame.x, frame.y, frame.verticesPerFace );
 
   return frame;
 }
@@ -1634,8 +1696,8 @@ static bool replaceFile( const std::string &tmp, const std::string &target, std:
 
 void MDAL::DriverSelafin::save( const std::string &fileName, const std::string &, MDAL::Mesh *mesh )
 {
-  // Write to a temporary file first: a MeshSelafin's frame is read lazily
-  // from the source file during the save, which may be fileName itself.
+  // Write to a temporary file first: a MeshSelafin's frame and IPOBO are read
+  // lazily from the source file during the save, which may be fileName itself.
   const std::string tempFileName = fileName + ".tmp";
   // replaceFile() takes the temporary file over: once it has run, the catch
   // blocks below must not remove it, it may hold the only copy of the mesh.

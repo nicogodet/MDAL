@@ -825,6 +825,166 @@ TEST( MeshSLFTest, IPOBOLargeMeshBoundarySet )
     EXPECT_EQ( vals[i], static_cast<int>( i + 1 ) ) << "IPOBO numbering is not consecutive";
 }
 
+// Byte offsets inside a frame-only SELAFIN file written by MDAL itself
+// (layout is deterministic): 80-char title record, NBV record (2 ints),
+// IPARAM record (10 ints), NELEM record (4 ints), connectivity record,
+// IPOBO record. Each record is framed by two 4-byte lengths.
+static std::streamoff mdalWrittenIpoboPayloadOffset( int nFaces )
+{
+  return ( 4 + 80 + 4 ) + ( 4 + 8 + 4 ) + ( 4 + 40 + 4 ) + ( 4 + 16 + 4 )
+         + ( 4 + nFaces * 3 * 4 + 4 ) + 4;
+}
+
+static const std::streamoff sMdalWrittenIparamPayloadOffset = ( 4 + 80 + 4 ) + ( 4 + 8 + 4 ) + 4;
+
+// SELAFIN files are big-endian on disk
+static void patchBigEndianInts( const std::string &fileName, std::streamoff pos, const std::vector<int> &values )
+{
+  std::fstream f( fileName, std::ios::in | std::ios::out | std::ios::binary );
+  ASSERT_TRUE( f.is_open() );
+  f.seekp( pos );
+  for ( int value : values )
+  {
+    unsigned char b[4];
+    b[0] = static_cast<unsigned char>( ( value >> 24 ) & 0xff );
+    b[1] = static_cast<unsigned char>( ( value >> 16 ) & 0xff );
+    b[2] = static_cast<unsigned char>( ( value >> 8 ) & 0xff );
+    b[3] = static_cast<unsigned char>( value & 0xff );
+    f.write( reinterpret_cast<char *>( b ), 4 );
+  }
+}
+
+// The 3x3 grid of IPOBOComputation, saved by MDAL to tmpName.
+static void saveReferenceGrid( const std::string &savedFile )
+{
+  std::vector<double> coords
+  {
+    0, 0, 0,   1, 0, 0,   2, 0, 0,
+    0, 1, 0,   1, 1, 0,   2, 1, 0,
+    0, 2, 0,   1, 2, 0,   2, 2, 0,
+  };
+  std::vector<int> faceIndices
+  {
+    0, 1, 4,   0, 4, 3,
+    1, 2, 5,   1, 5, 4,
+    3, 4, 7,   3, 7, 6,
+    4, 5, 8,   4, 8, 7,
+  };
+  MDAL_DriverH driver = MDAL_driverFromName( "2DM" );
+  MDAL_MeshH mesh = MDAL_CreateMesh( driver );
+  MDAL_M_addVertices( mesh, 9, coords.data() );
+  std::vector<int> faceSizes( 8, 3 );
+  MDAL_M_addFaces( mesh, 8, faceSizes.data(), faceIndices.data() );
+  MDAL_SaveMesh( mesh, savedFile.c_str(), "SELAFIN" );
+  ASSERT_EQ( MDAL_Status::None, MDAL_LastStatus() );
+  MDAL_CloseMesh( mesh );
+}
+
+TEST( MeshSLFTest, IPOBOAllZeroStoredIsRecomputed )
+{
+  // Files written by older MDAL versions store an all-zero IPOBO. Re-saving
+  // such a MeshSelafin must NOT faithfully copy the zeros: the cached path is
+  // rejected and the array is recomputed.
+  std::string file = tmp_file( "/ipobo_zeros_src.slf" );
+  saveReferenceGrid( file );
+  patchBigEndianInts( file, mdalWrittenIpoboPayloadOffset( 8 ), std::vector<int>( 9, 0 ) );
+
+  MDAL_MeshH mesh = MDAL_LoadMesh( file.c_str() );
+  ASSERT_NE( mesh, nullptr );
+  std::string savedFile = tmp_file( "/ipobo_zeros_dst.slf" );
+  MDAL_SaveMesh( mesh, savedFile.c_str(), "SELAFIN" );
+  ASSERT_EQ( MDAL_Status::None, MDAL_LastStatus() );
+  MDAL_CloseMesh( mesh );
+
+  const std::vector<int> expected{ 1, 2, 3, 8, 0, 4, 7, 6, 5 };
+  EXPECT_EQ( readIpoboFromFile( savedFile ), expected )
+      << "An all-zero stored IPOBO must be recomputed, not copied";
+}
+
+TEST( MeshSLFTest, IPOBOPartitionedFileNotReused )
+{
+  // On a partitioned SELAFIN file (IPARAM(9) = NPTIR != 0) the record in the
+  // IPOBO slot holds KNOLG. Re-saving must ignore that record and recompute a
+  // real IPOBO for the (serial) output file.
+  std::string file = tmp_file( "/ipobo_knolg_src.slf" );
+  saveReferenceGrid( file );
+  // IPARAM(9) = 1 and a bogus KNOLG-like payload that must not be copied
+  patchBigEndianInts( file, sMdalWrittenIparamPayloadOffset + 8 * 4, { 1 } );
+  patchBigEndianInts( file, mdalWrittenIpoboPayloadOffset( 8 ), std::vector<int>( 9, 7 ) );
+
+  MDAL_MeshH mesh = MDAL_LoadMesh( file.c_str() );
+  ASSERT_NE( mesh, nullptr );
+  std::string savedFile = tmp_file( "/ipobo_knolg_dst.slf" );
+  MDAL_SaveMesh( mesh, savedFile.c_str(), "SELAFIN" );
+  ASSERT_EQ( MDAL_Status::None, MDAL_LastStatus() );
+  MDAL_CloseMesh( mesh );
+
+  const std::vector<int> expected{ 1, 2, 3, 8, 0, 4, 7, 6, 5 };
+  EXPECT_EQ( readIpoboFromFile( savedFile ), expected )
+      << "A partitioned file's KNOLG record must not be reused as IPOBO";
+}
+
+// Loads \a sourceFile as a MeshSelafin and saves it again as SELAFIN, which
+// takes the cached path when the stored IPOBO is a genuine boundary numbering.
+static std::vector<int> resaveSelafinAndReadIpobo( const std::string &sourceFile,
+    const std::string &tmpName )
+{
+  MDAL_MeshH mesh = MDAL_LoadMesh( sourceFile.c_str() );
+  EXPECT_NE( mesh, nullptr );
+  if ( !mesh )
+    return std::vector<int>();
+  std::string savedFile = tmp_file( tmpName );
+  MDAL_SaveMesh( mesh, savedFile.c_str(), "SELAFIN" );
+  EXPECT_EQ( MDAL_Status::None, MDAL_LastStatus() );
+  MDAL_CloseMesh( mesh );
+  return readIpoboFromFile( savedFile );
+}
+
+TEST( MeshSLFTest, IPOBORoundTrip )
+{
+  // Round-tripping a MeshSelafin reuses the IPOBO stored in the source file
+  // (no recompute), so the saved file must have exactly the same array.
+  std::string sourceFile = test_file( "/slf/example_res_fr.slf" );
+
+  std::vector<int> sourceIpobo = readIpoboFromFile( sourceFile );
+  ASSERT_FALSE( sourceIpobo.empty() );
+
+  EXPECT_EQ( sourceIpobo, resaveSelafinAndReadIpobo( sourceFile, "/ipobo_roundtrip.slf" ) )
+      << "Round-trip did not preserve IPOBO";
+}
+
+TEST( MeshSLFTest, IPOBOSerialTelemacFileReused )
+{
+  // A serial Telemac v7 result sets IPARAM(8) = NPTFR next to a real IPOBO,
+  // which the manual describes as the partitioned case. Its numbering must be
+  // reused as it is, not thrown away.
+  std::string sourceFile = test_file( "/slf/test_sd_7.slf" );
+
+  std::vector<int> sourceIpobo = readIpoboFromFile( sourceFile );
+  ASSERT_FALSE( sourceIpobo.empty() );
+
+  EXPECT_EQ( sourceIpobo, resaveSelafinAndReadIpobo( sourceFile, "/ipobo_serial_telemac.slf" ) )
+      << "The IPOBO of a serial Telemac file must be preserved";
+}
+
+TEST( MeshSLFTest, IPOBOInvalidStoredIsRecomputed )
+{
+  // example.slf numbers its boundary nodes with their own node index (up to
+  // 12452 for 1080 boundary nodes), which is not a valid boundary numbering:
+  // it must be recomputed instead of being copied. The result is checked
+  // against the array stored by example_res_fr.slf, the same mesh with a
+  // proper IPOBO.
+  std::vector<int> brokenIpobo = readIpoboFromFile( test_file( "/slf/example.slf" ) );
+  ASSERT_FALSE( brokenIpobo.empty() );
+  std::vector<int> referenceIpobo = readIpoboFromFile( test_file( "/slf/example_res_fr.slf" ) );
+  ASSERT_FALSE( referenceIpobo.empty() );
+  ASSERT_NE( brokenIpobo, referenceIpobo );
+
+  EXPECT_EQ( referenceIpobo, resaveSelafinAndReadIpobo( test_file( "/slf/example.slf" ),
+             "/ipobo_invalid_stored.slf" ) )
+      << "An invalid stored IPOBO must be recomputed, not copied";
+}
+
 TEST( MeshSLFTest, TruncatedFileUnderOpenHandle )
 {
   // A Selafin mesh reads its frame and its values lazily, so a file rewritten
