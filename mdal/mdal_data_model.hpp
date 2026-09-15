@@ -35,6 +35,7 @@ namespace MDAL
   {
     double minimum = std::numeric_limits<double>::quiet_NaN();
     double maximum = std::numeric_limits<double>::quiet_NaN();
+    bool isComputed = false;
   } Statistics;
 
   typedef std::vector< std::pair< std::string, std::string > > Metadata;

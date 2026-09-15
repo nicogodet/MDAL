@@ -167,6 +167,18 @@ namespace MDAL
 
   //! Calculates statistics for dataset
   Statistics calculateStatistics( std::shared_ptr<Dataset> dataset );
+  Statistics calculateStatistics( Dataset *dataset );
+
+  //! Computes and stores statistics for \a target (raw or shared pointer to
+  //! a Dataset or DatasetGroup) unless loadFlags has MDAL_LF_SkipStatistics.
+  //! Drivers should use this in place of
+  //! `target->setStatistics( calculateStatistics( target ) )`.
+  template <typename T>
+  void setStatisticsIfRequired( const T &target, int loadFlags )
+  {
+    if ( target && !( loadFlags & MDAL_LF_SkipStatistics ) )
+      target->setStatistics( calculateStatistics( &*target ) );
+  }
 
   // mesh & datasets
   //! Adds bed elevatiom dataset group to mesh

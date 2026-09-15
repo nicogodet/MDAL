@@ -641,6 +641,11 @@ MDAL::Statistics _calculateStatistics( const std::vector<double> &values, size_t
   return ret;
 }
 
+//! Computes the statistics of \a dataset into \a stats. Returns false when
+//! the driver returned fewer values than the dataset advertises, i.e. when
+//! \a stats only covers part of the dataset.
+static bool _calculateDatasetStatistics( MDAL::Dataset *dataset, MDAL::Statistics &stats );
+
 MDAL::Statistics MDAL::calculateStatistics( std::shared_ptr<MDAL::DatasetGroup> grp )
 {
   return calculateStatistics( grp.get() );
@@ -662,9 +667,14 @@ MDAL::Statistics MDAL::calculateStatistics( DatasetGroup *grp )
 
 MDAL::Statistics MDAL::calculateStatistics( std::shared_ptr<Dataset> dataset )
 {
-  Statistics ret;
+  return calculateStatistics( dataset.get() );
+}
+
+static bool _calculateDatasetStatistics( MDAL::Dataset *dataset, MDAL::Statistics &stats )
+{
+  stats = MDAL::Statistics();
   if ( !dataset )
-    return ret;
+    return false;
 
   bool isVector = !dataset->group()->isScalar();
   bool is3D = dataset->group()->dataLocation() == MDAL_DataLocation::DataOnVolumes;
@@ -706,14 +716,21 @@ MDAL::Statistics MDAL::calculateStatistics( std::shared_ptr<Dataset> dataset )
         dataset->activeData( i, bufLen, activeBuffer.data() );
     }
     if ( valsRead == 0 )
-      return ret;
+      return false;
 
     MDAL::Statistics dsStats = _calculateStatistics( buffer, valsRead, isVector, activeBuffer );
-    combineStatistics( ret, dsStats );
+    MDAL::combineStatistics( stats, dsStats );
     i += valsRead;
   }
 
-  return ret;
+  return true;
+}
+
+MDAL::Statistics MDAL::calculateStatistics( Dataset *dataset )
+{
+  Statistics stats;
+  _calculateDatasetStatistics( dataset, stats );
+  return stats;
 }
 
 void MDAL::combineStatistics( MDAL::Statistics &main, const MDAL::Statistics &other )

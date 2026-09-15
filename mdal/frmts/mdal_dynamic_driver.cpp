@@ -258,8 +258,14 @@ bool MDAL::MeshDynamicDriver::populateDatasetGroups( int loadFlags )
           if ( !dataset2D->loadSymbol() )
             return false;
 
-          dataset2D->setStatistics( MDAL::calculateStatistics( dataset2D ) );
-          dataset2D->unloadData();
+          // only unload what the plugin was actually asked to load: computing
+          // the statistics is the only reason MDAL_DRIVER_D_data() is called
+          // here, so skipping them must also skip MDAL_DRIVER_D_unload()
+          if ( !( loadFlags & MDAL_LF_SkipStatistics ) )
+          {
+            MDAL::setStatisticsIfRequired( dataset2D, loadFlags );
+            dataset2D->unloadData();
+          }
           dataset = dataset2D;
         }
         break;
@@ -273,8 +279,11 @@ bool MDAL::MeshDynamicDriver::populateDatasetGroups( int loadFlags )
           if ( ! dataset3D->loadSymbol() )
             return false;
 
-          dataset3D->setStatistics( MDAL::calculateStatistics( dataset3D ) );
-          dataset3D->unloadData();
+          if ( !( loadFlags & MDAL_LF_SkipStatistics ) )
+          {
+            MDAL::setStatisticsIfRequired( dataset3D, loadFlags );
+            dataset3D->unloadData();
+          }
           dataset = dataset3D;
         }
         break;
@@ -289,7 +298,7 @@ bool MDAL::MeshDynamicDriver::populateDatasetGroups( int loadFlags )
       group->datasets.emplace_back( std::move( dataset ) );
     }
 
-    group->setStatistics( MDAL::calculateStatistics( group ) );
+    MDAL::setStatisticsIfRequired( group, loadFlags );
     datasetGroups.emplace_back( std::move( group ) );
   }
   return true;
