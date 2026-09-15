@@ -188,6 +188,11 @@ int MDAL_DR_faceVerticesMaximumCount( MDAL_DriverH driver )
 
 MDAL_MeshH MDAL_LoadMesh( const char *uri )
 {
+  return MDAL_LoadMeshWithFlags( uri, 0 );
+}
+
+MDAL_MeshH MDAL_LoadMeshWithFlags( const char *uri, int flags )
+{
   if ( !uri )
   {
     MDAL::Log::error( MDAL_Status::Err_FileNotFound, "Mesh file is not valid (null)" );
@@ -200,10 +205,10 @@ MDAL_MeshH MDAL_LoadMesh( const char *uri )
 
   if ( !driverName.empty() )
   {
-    return static_cast< MDAL_MeshH >( MDAL::DriverManager::instance().load( driverName, meshFile, meshName ).release() );
+    return static_cast< MDAL_MeshH >( MDAL::DriverManager::instance().load( driverName, meshFile, meshName, flags ).release() );
   }
   else
-    return static_cast< MDAL_MeshH >( MDAL::DriverManager::instance().load( meshFile, meshName ).release() );
+    return static_cast< MDAL_MeshH >( MDAL::DriverManager::instance().load( meshFile, meshName, flags ).release() );
 }
 
 const char *MDAL_MeshNames( const char *uri )
@@ -396,6 +401,11 @@ int MDAL_M_faceVerticesMaximumCount( MDAL_MeshH mesh )
 
 void MDAL_M_LoadDatasets( MDAL_MeshH mesh, const char *datasetFile )
 {
+  MDAL_M_LoadDatasetsWithFlags( mesh, datasetFile, 0 );
+}
+
+void MDAL_M_LoadDatasetsWithFlags( MDAL_MeshH mesh, const char *datasetFile, int flags )
+{
   if ( !datasetFile )
   {
     MDAL::Log::error( MDAL_Status::Err_FileNotFound, "Dataset file is not valid (null)" );
@@ -410,8 +420,7 @@ void MDAL_M_LoadDatasets( MDAL_MeshH mesh, const char *datasetFile )
 
   MDAL::Mesh *m = static_cast< MDAL::Mesh * >( mesh );
 
-  std::string filename( datasetFile );
-  MDAL::DriverManager::instance().loadDatasets( m, datasetFile );
+  MDAL::DriverManager::instance().loadDatasets( m, datasetFile, flags );
 }
 
 int MDAL_M_metadataCount( MDAL_MeshH mesh )

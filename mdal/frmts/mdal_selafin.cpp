@@ -242,19 +242,19 @@ std::vector<double> MDAL::SelafinFile::vertices( size_t offset, size_t count )
   return coordinates;
 }
 
-std::unique_ptr<MDAL::Mesh> MDAL::SelafinFile::createMesh( const std::string &fileName )
+std::unique_ptr<MDAL::Mesh> MDAL::SelafinFile::createMesh( const std::string &fileName, int loadFlags )
 {
   std::shared_ptr<SelafinFile> reader = std::make_shared<SelafinFile>( fileName );
   reader->initialize();
   reader->parseFile();
 
   std::unique_ptr<Mesh> mesh( new MeshSelafin( fileName, reader ) );
-  populateDataset( mesh.get(), std::move( reader ) );
+  populateDataset( mesh.get(), std::move( reader ), loadFlags );
 
   return mesh;
 }
 
-void MDAL::SelafinFile::populateDataset( MDAL::Mesh *mesh, const std::string &fileName )
+void MDAL::SelafinFile::populateDataset( MDAL::Mesh *mesh, const std::string &fileName, int loadFlags )
 {
   std::shared_ptr<SelafinFile> reader = std::make_shared<SelafinFile>( fileName );
   reader->initialize();
@@ -263,7 +263,7 @@ void MDAL::SelafinFile::populateDataset( MDAL::Mesh *mesh, const std::string &fi
   if ( mesh->verticesCount() != reader->verticesCount() || mesh->facesCount() != reader->facesCount() )
     throw MDAL::Error( MDAL_Status::Err_IncompatibleDataset, "Faces or vertices counts in the file are not the same" );
 
-  populateDataset( mesh, std::move( reader ) );
+  populateDataset( mesh, std::move( reader ), loadFlags );
 }
 
 size_t MDAL::SelafinFile::facesCount()
@@ -297,7 +297,7 @@ std::vector<double> MDAL::SelafinFile::datasetValues( size_t timeStepIndex, size
     return std::vector<double>();
 }
 
-void MDAL::SelafinFile::populateDataset( MDAL::Mesh *mesh, std::shared_ptr<MDAL::SelafinFile> reader )
+void MDAL::SelafinFile::populateDataset( MDAL::Mesh *mesh, std::shared_ptr<MDAL::SelafinFile> reader, int loadFlags )
 {
   std::map<std::string, std::shared_ptr<DatasetGroup>> groupsByName;
   std::vector< std::shared_ptr<DatasetGroup>> groupsInOrder;
@@ -662,7 +662,7 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverSelafin::load( const std::string &meshFi
 
   try
   {
-    mesh = SelafinFile::createMesh( meshFile );
+    mesh = SelafinFile::createMesh( meshFile, loadFlags() );
   }
   catch ( MDAL_Status error )
   {
@@ -683,7 +683,7 @@ void MDAL::DriverSelafin::load( const std::string &datFile, MDAL::Mesh *mesh )
 
   try
   {
-    SelafinFile::populateDataset( mesh, datFile );
+    SelafinFile::populateDataset( mesh, datFile, loadFlags() );
   }
   catch ( MDAL_Status error )
   {

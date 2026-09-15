@@ -53,7 +53,7 @@ std::unique_ptr<MDAL::Mesh> MDAL::DriverDynamic::load( const std::string &uri, c
       {
         mMeshIds.insert( meshId );
         mesh->setProjection();
-        if ( mesh->populateDatasetGroups() )
+        if ( mesh->populateDatasetGroups( loadFlags() ) )
           return mesh;
       }
     }
@@ -184,7 +184,7 @@ void MDAL::MeshDynamicDriver::setProjection()
   setSourceCrs( projection );
 }
 
-bool MDAL::MeshDynamicDriver::populateDatasetGroups()
+bool MDAL::MeshDynamicDriver::populateDatasetGroups( int loadFlags )
 {
   if ( !mMeshDatasetGroupsCountFunction )
     return false;
