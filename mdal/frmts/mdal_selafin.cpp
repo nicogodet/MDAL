@@ -526,9 +526,8 @@ int MDAL::SelafinFile::readInt( )
 {
   unsigned char data[4];
 
-  if ( mIn.read( reinterpret_cast< char * >( &data ), 4 ) )
-    if ( !mIn )
-      throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Unable to open stream for reading int" );
+  if ( !mIn.read( reinterpret_cast< char * >( &data ), 4 ) )
+    throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Unable to read int, stream failed" );
   if ( mChangeEndianness )
   {
     std::reverse( reinterpret_cast< char * >( &data ), reinterpret_cast< char * >( &data ) + 4 );
