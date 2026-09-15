@@ -433,28 +433,36 @@ std::vector<double> MDAL::SelafinFile::readDoubleArr( size_t len )
       throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading double array" );
   }
   std::vector<double> ret( len );
-  for ( size_t i = 0; i < len; ++i )
-  {
-    ret[i] = readDouble();
-  }
+  readDoubleValues( ret, len );
   ignoreArrayLength();
   return ret;
 }
 
 std::vector<double> MDAL::SelafinFile::readDoubleArr( const std::streampos &position, size_t offset, size_t len )
 {
-  std::vector<double> ret( len );
-  std::streamoff off;
-  if ( mStreamInFloatPrecision )
-    off = offset * 4;
-  else
-    off = offset * 8;
-
+  const std::streamoff off = offset * ( mStreamInFloatPrecision ? 4 : 8 );
   mIn.seekg( position + off );
-  for ( size_t i = 0; i < len; ++i )
-    ret[i] = readDouble();
 
+  std::vector<double> ret( len );
+  readDoubleValues( ret, len );
   return ret;
+}
+
+//! Reads \a len values into \a values from the current position, widening them
+//! from float when the file is stored in single precision
+void MDAL::SelafinFile::readDoubleValues( std::vector<double> &values, size_t len )
+{
+  if ( mStreamInFloatPrecision )
+  {
+    std::vector<float> raw( len );
+    if ( !MDAL::readArray( raw.data(), len, mIn, mChangeEndianness ) )
+      throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Unable to read float array, stream failed" );
+    std::copy( raw.begin(), raw.end(), values.begin() );
+  }
+  else if ( !MDAL::readArray( values.data(), len, mIn, mChangeEndianness ) )
+  {
+    throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Unable to read double array, stream failed" );
+  }
 }
 
 std::vector<int> MDAL::SelafinFile::readIntArr( size_t len )
@@ -462,23 +470,19 @@ std::vector<int> MDAL::SelafinFile::readIntArr( size_t len )
   size_t length = readSizeT();
   if ( length != len * 4 ) throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "File format problem while reading int array" );
   std::vector<int> ret( len );
-  for ( size_t i = 0; i < len; ++i )
-  {
-    ret[i] = readInt();
-  }
+  if ( !MDAL::readArray( ret.data(), len, mIn, mChangeEndianness ) )
+    throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Unable to read int array, stream failed" );
   ignoreArrayLength();
   return ret;
 }
 
 std::vector<int> MDAL::SelafinFile::readIntArr( const std::streampos &position, size_t offset, size_t len )
 {
+  mIn.seekg( position + std::streamoff( offset * 4 ) );
+
   std::vector<int> ret( len );
-  std::streamoff off = offset * 4;
-
-  mIn.seekg( position + off );
-  for ( size_t i = 0; i < len; ++i )
-    ret[i] = readInt();
-
+  if ( !MDAL::readArray( ret.data(), len, mIn, mChangeEndianness ) )
+    throw MDAL::Error( MDAL_Status::Err_UnknownFormat, "Unable to read int array, stream failed" );
   return ret;
 }
 
@@ -936,19 +940,17 @@ static void writeStringRecord( std::ofstream &file, const std::string &str )
 }
 
 template<typename T>
-static void writeValueArrayRecord( std::ofstream &file, const std::vector<T> &array )
+static void writeValueArray( std::ofstream &file, const std::vector<T> &array )
 {
-  writeValue( file, int( array.size()*sizeof( T ) ) );
-  for ( const T value : array )
-    writeValue( file, value );
-  writeValue( file, int( array.size()*sizeof( T ) ) );
+  MDAL::writeArray( array.data(), array.size(), file, MDAL::isNativeLittleEndian() );
 }
 
 template<typename T>
-static void writeValueArray( std::ofstream &file, const std::vector<T> &array )
+static void writeValueArrayRecord( std::ofstream &file, const std::vector<T> &array )
 {
-  for ( const T value : array )
-    writeValue( file, value );
+  writeValue( file, int( array.size()*sizeof( T ) ) );
+  writeValueArray( file, array );
+  writeValue( file, int( array.size()*sizeof( T ) ) );
 }
 
 template<typename T>

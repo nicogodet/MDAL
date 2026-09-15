@@ -359,3 +359,115 @@ TEST( MdalUtilsTest, LibraryTest )
   std::function<void ( int )> funct = library.getSymbol<int, int>( "function" );
   EXPECT_FALSE( funct );
 }
+
+TEST( MdalUtilsTest, SwapBytes )
+{
+  EXPECT_EQ( 0x78563412u, MDAL::swapBytes32( 0x12345678u ) );
+  EXPECT_EQ( 0x12345678u, MDAL::swapBytes32( MDAL::swapBytes32( 0x12345678u ) ) );
+  EXPECT_EQ( 0xefcdab8967452301ull, MDAL::swapBytes64( 0x0123456789abcdefull ) );
+  EXPECT_EQ( 0x0123456789abcdefull,
+             MDAL::swapBytes64( MDAL::swapBytes64( 0x0123456789abcdefull ) ) );
+
+  // swapping twice is the identity, including for floating point values
+  std::vector<double> values{ 0.0, -1.5, 3.14159265358979, 1e300, -0.0 };
+  const std::vector<double> expected = values;
+  MDAL::swapBytesInPlace( values.data(), values.size() );
+  EXPECT_NE( values, expected );
+  MDAL::swapBytesInPlace( values.data(), values.size() );
+  EXPECT_EQ( values, expected );
+
+  std::vector<int> ints{ 0, 1, -1, std::numeric_limits<int>::max(), std::numeric_limits<int>::lowest() };
+  const std::vector<int> expectedInts = ints;
+  MDAL::swapBytesInPlace( ints.data(), ints.size() );
+  MDAL::swapBytesInPlace( ints.data(), ints.size() );
+  EXPECT_EQ( ints, expectedInts );
+}
+
+//! Reads a whole file as raw bytes (not MDAL::readFileToString, which opens in
+//! text mode and would translate line endings on Windows)
+static std::string readBinaryFile( const std::string &path )
+{
+  std::ifstream in( path, std::ifstream::binary );
+  std::stringstream buffer;
+  buffer << in.rdbuf();
+  return buffer.str();
+}
+
+//! Writes \a values with writeArray, reads them back with readArray
+template<typename T>
+static std::vector<T> arrayRoundTrip( const std::vector<T> &values, bool changeEndianness,
+                                      const std::string &name )
+{
+  const std::string path = tmp_file( name );
+  {
+    std::ofstream out = MDAL::openOutputFile( path, std::ofstream::binary );
+    MDAL::writeArray( values.data(), values.size(), out, changeEndianness );
+  }
+  std::vector<T> read( values.size() );
+  std::ifstream in = MDAL::openInputFile( path, std::ifstream::binary );
+  EXPECT_TRUE( MDAL::readArray( read.data(), read.size(), in, changeEndianness ) );
+  return read;
+}
+
+TEST( MdalUtilsTest, ReadWriteArrayRoundTrip )
+{
+  std::vector<int> ints{ 0, 1, -1, 42, std::numeric_limits<int>::max(), std::numeric_limits<int>::lowest() };
+  EXPECT_EQ( ints, arrayRoundTrip( ints, false, "/array_int_native.bin" ) );
+  EXPECT_EQ( ints, arrayRoundTrip( ints, true, "/array_int_swapped.bin" ) );
+
+  std::vector<double> doubles{ 0.0, -1.5, 3.14159265358979, 1e300, -1e-300 };
+  EXPECT_EQ( doubles, arrayRoundTrip( doubles, false, "/array_double_native.bin" ) );
+  EXPECT_EQ( doubles, arrayRoundTrip( doubles, true, "/array_double_swapped.bin" ) );
+
+  std::vector<float> floats{ 0.0f, -1.5f, 2.5f, 1e30f };
+  EXPECT_EQ( floats, arrayRoundTrip( floats, true, "/array_float_swapped.bin" ) );
+
+  // more values than the internal write chunk, to cover chunk boundaries
+  std::vector<int> many( 200000 );
+  for ( size_t i = 0; i < many.size(); ++i )
+    many[i] = static_cast<int>( i ) - 100000;
+  EXPECT_EQ( many, arrayRoundTrip( many, true, "/array_int_chunked.bin" ) );
+}
+
+TEST( MdalUtilsTest, ReadWriteArrayBytesMatchSingleValues )
+{
+  // writeArray must produce exactly what a writeValue loop produces
+  const std::vector<int> values{ 1, -2, 3, -4, 5 };
+  const std::string bulkPath = tmp_file( "/array_bulk.bin" );
+  const std::string loopPath = tmp_file( "/array_loop.bin" );
+  {
+    std::ofstream out = MDAL::openOutputFile( bulkPath, std::ofstream::binary );
+    MDAL::writeArray( values.data(), values.size(), out, true );
+  }
+  {
+    std::ofstream out = MDAL::openOutputFile( loopPath, std::ofstream::binary );
+    for ( int v : values )
+      MDAL::writeValue( v, out, true );
+  }
+  EXPECT_EQ( readBinaryFile( bulkPath ), readBinaryFile( loopPath ) );
+
+  // and readArray must read back what a readValue loop reads
+  std::vector<int> bulk( values.size() );
+  std::ifstream in = MDAL::openInputFile( bulkPath, std::ifstream::binary );
+  EXPECT_TRUE( MDAL::readArray( bulk.data(), bulk.size(), in, true ) );
+  EXPECT_EQ( values, bulk );
+}
+
+TEST( MdalUtilsTest, ReadArrayFailsOnTruncatedStream )
+{
+  const std::string path = tmp_file( "/array_truncated.bin" );
+  const std::vector<int> values{ 1, 2, 3 };
+  {
+    std::ofstream out = MDAL::openOutputFile( path, std::ofstream::binary );
+    MDAL::writeArray( values.data(), values.size(), out, true );
+  }
+
+  std::vector<int> tooMany( 10 );
+  std::ifstream in = MDAL::openInputFile( path, std::ifstream::binary );
+  EXPECT_FALSE( MDAL::readArray( tooMany.data(), tooMany.size(), in, true ) );
+
+  // reading nothing always succeeds and leaves the stream untouched
+  std::ifstream empty = MDAL::openInputFile( path, std::ifstream::binary );
+  EXPECT_TRUE( MDAL::readArray( tooMany.data(), 0, empty, true ) );
+  EXPECT_TRUE( empty.good() );
+}
