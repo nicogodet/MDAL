@@ -313,7 +313,7 @@ std::shared_ptr<MDAL::DatasetGroup> MDAL::DriverSWW::readScalarGroup(
       {
         o->setScalarValue( i, valuesX[i] );
       }
-      o->setStatistics( MDAL::calculateStatistics( o ) );
+      MDAL::setStatisticsIfRequired( o, loadFlags() );
       mds->datasets.push_back( o );
     }
     else
@@ -333,11 +333,11 @@ std::shared_ptr<MDAL::DatasetGroup> MDAL::DriverSWW::readScalarGroup(
         count[0] = 1;
         count[1] = nPoints;
         nc_get_vars_double( ncFile.handle(), varxid, start, count, stride, values );
-        mto->setStatistics( MDAL::calculateStatistics( mto ) );
+        MDAL::setStatisticsIfRequired( mto, loadFlags() );
         mds->datasets.push_back( mto );
       }
     }
-    mds->setStatistics( MDAL::calculateStatistics( mds ) );
+    MDAL::setStatisticsIfRequired( mds, loadFlags() );
   }
 
   return mds;
@@ -389,7 +389,7 @@ std::shared_ptr<MDAL::DatasetGroup> MDAL::DriverSWW::readVectorGroup(
       {
         o->setVectorValue( i, valuesX[i], valuesY[i] );
       }
-      o->setStatistics( MDAL::calculateStatistics( o ) );
+      MDAL::setStatisticsIfRequired( o, loadFlags() );
       mds->datasets.push_back( o );
     }
     else
@@ -416,11 +416,11 @@ std::shared_ptr<MDAL::DatasetGroup> MDAL::DriverSWW::readVectorGroup(
           mto->setVectorValue( i, static_cast<double>( valuesX[i] ),  static_cast<double>( valuesY[i] ) );
         }
 
-        mto->setStatistics( MDAL::calculateStatistics( mto ) );
+        MDAL::setStatisticsIfRequired( mto, loadFlags() );
         mds->datasets.push_back( mto );
       }
     }
-    mds->setStatistics( MDAL::calculateStatistics( mds ) );
+    MDAL::setStatisticsIfRequired( mds, loadFlags() );
   }
 
   return mds;
